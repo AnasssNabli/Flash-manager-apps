@@ -1,0 +1,31 @@
+// WhatsApp Business app — its OWN database. Conversations, messages and the
+// merchant's Meta credentials all live in FlashManager and are reached through
+// the App Gateway; nothing about them is mirrored here. The only thing this DB
+// holds is how to call the gateway on a seller's behalf.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// One row per FlashManager seller who has opened this app.
+///
+/// `fm_access_token` is the permanent `fmagt_…` grant from the OAuth install —
+/// preferred for every gateway call. `fm_session_token` is the short-lived
+/// bridge token the embedded page last handed us; it keeps the app usable for a
+/// seller who opened it from the sidebar without installing yet, and is only
+/// used while it is still inside `fm_session_exp`.
+model app_tenants {
+  id               String   @id @default(uuid())
+  fm_owner_id      String   @unique
+  fm_access_token  String?
+  fm_token_scopes  String[] @default([])
+  fm_session_token String?
+  fm_session_exp   DateTime?
+  created_at       DateTime @default(now())
+  updated_at       DateTime @updatedAt
+}

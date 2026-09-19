@@ -1,0 +1,30 @@
+{
+  "name": "app-whatsapp-business",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 39008",
+    "build": "prisma generate && next build",
+    "start": "next start -p 39008",
+    "db:push": "prisma db push"
+  },
+  "dependencies": {
+    "@flashmanager/app-bridge": "file:../../packages/app-bridge",
+    "@iconify/react": "^6.0.2",
+    "@prisma/client": "^6.19.1",
+    "next": "14.2.35",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "swr": "^2.2.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "autoprefixer": "^10.4.0",
+    "postcss": "^8.4.0",
+    "prisma": "^6.19.1",
+    "tailwindcss": "^3.4.0",
+    "typescript": "^5"
+  }
+}

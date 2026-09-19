@@ -1,0 +1,211 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// One row per FlashManager seller. Holds the durable OAuth grant used
+/// while the seller is not looking at the app.
+model Tenant {
+  ownerId    String   @id
+  grantToken String?  @db.Text
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+model AgentSettings {
+  ownerId      String   @id
+  enabled      Boolean  @default(false)
+  language     String   @default("auto")
+  tone         String   @default("helpful")
+  instructions String?  @db.Text
+  productAware Boolean  @default(true)
+  updatedAt    DateTime @updatedAt
+}
+
+model Agent {
+  id           String   @id @default(cuid())
+  ownerId      String
+  name         String
+  storeDomain  String?
+  storeName    String?
+  productScope String   @default("all")
+  productId    String?
+  productName  String?
+  productImage String?  @db.Text
+  productJson  String?  @db.Text
+  policiesJson String?  @db.Text
+  prompt       String   @db.Text
+  enabled      Boolean  @default(true)
+  language     String   @default("auto")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([ownerId, createdAt])
+}
+
+model ReplyLog {
+  id        String   @id @default(cuid())
+  ownerId   String
+  phone     String
+  inboundId String
+  inbound   String   @db.Text
+  outbound  String   @db.Text
+  credits   Int      @default(2)
+  status    String
+  error     String?  @db.Text
+  createdAt DateTime @default(now())
+
+  @@unique([ownerId, inboundId])
+  @@index([ownerId, createdAt])
+}
+
+model AgentConversation {
+  id                 String   @id @default(cuid())
+  ownerId            String
+  agentId            String
+  phone              String
+  state              String   @default("ai_active")
+  firstCustomerAt    DateTime?
+  lastCustomerAt     DateTime?
+  lastHumanAt        DateTime?
+  humanRequestedAt   DateTime?
+  stoppedAt          DateTime?
+  orderConfirmedAt   DateTime?
+  pendingOrderJson   String?  @db.Text
+  aiReplyCount       Int      @default(0)
+  latestInboundId    String?
+  latestInboundAt    DateTime?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@unique([agentId, phone])
+  @@index([ownerId, phone])
+  @@index([ownerId, state])
+}
+
+model AgentInboundClaim {
+  id          String   @id @default(cuid())
+  ownerId     String
+  agentId     String
+  phone       String
+  inboundId   String
+  status      String   @default("processing")
+  error       String?  @db.Text
+  createdAt   DateTime @default(now())
+  completedAt DateTime?
+
+  @@unique([ownerId, inboundId])
+  @@index([ownerId, status, createdAt])
+}
+
+model AgentOutbound {
+  id               String    @id @default(cuid())
+  ownerId          String
+  agentId          String
+  phone            String
+  kind             String    @default("text")
+  body             String?   @db.Text
+  bodyHash         String
+  source           String    @default("reply")
+  gatewayMessageId String?
+  status           String    @default("planned")
+  createdAt        DateTime  @default(now())
+  sentAt           DateTime?
+
+  @@index([ownerId, phone, sentAt])
+  @@index([ownerId, bodyHash, createdAt])
+}
+
+model AgentFollowUp {
+  id              String    @id @default(cuid())
+  ownerId         String
+  agentId         String
+  phone           String
+  sourceInboundId String
+  dueAt           DateTime
+  status          String    @default("scheduled")
+  cancelledAt     DateTime?
+  sentAt          DateTime?
+  error           String?   @db.Text
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([agentId, phone, sourceInboundId])
+  @@index([status, dueAt])
+  @@index([ownerId, phone, status])
+}
+
+model AgentOrder {
+  id          String   @id @default(cuid())
+  ownerId     String
+  agentId     String
+  phone       String
+  externalId  String   @unique
+  fingerprint String
+  gatewayId   String?
+  orderJson   String?  @db.Text
+  createdAt   DateTime @default(now())
+
+  @@index([ownerId, phone, createdAt])
+  @@index([ownerId, fingerprint, createdAt])
+}
+
+model AgentConversationLabel {
+  id        String   @id @default(cuid())
+  ownerId   String
+  agentId   String
+  phone     String
+  label     String
+  slot      String
+  managed   Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  @@unique([agentId, phone, label])
+  @@index([ownerId, phone, createdAt])
+}
+
+model Campaign {
+  id              String    @id @default(cuid())
+  ownerId         String
+  name            String
+  productId       String?
+  productName     String?
+  productImage    String?   @db.Text
+  productPrice    String?
+  message         String    @db.Text
+  audience        String    @default("window24h")
+  conditionType   String    @default("chats")
+  conditionJson   String?   @db.Text
+  scheduledAt     DateTime?
+  startedAt       DateTime?
+  converted       Int       @default(0)
+  status          String    @default("draft")
+  sent            Int       @default(0)
+  failed          Int       @default(0)
+  skipped         Int       @default(0)
+  total           Int       @default(0)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  sends           CampaignSend[]
+
+  @@index([ownerId, createdAt])
+  @@index([ownerId, status, scheduledAt])
+}
+
+model CampaignSend {
+  id         String   @id @default(cuid())
+  campaignId String
+  ownerId    String
+  phone      String
+  status     String   @default("queued")
+  error      String?
+  createdAt  DateTime @default(now())
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, phone])
+  @@index([campaignId, status])
+}

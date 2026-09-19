@@ -1,0 +1,21 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Match FlashManager's UI density. The host chrome renders ~16% smaller than
+   this app's default px sizing, so inside the iframe the app looked oversized
+   (fonts/avatars/spacing all bigger than the surrounding FlashManager UI).
+   A single root zoom scales the whole app uniformly so it blends in as one
+   seamless surface. The app root is `position: fixed; inset: 0`, which still
+   fills the iframe under `zoom` (unlike `transform: scale`), so there is no
+   letterbox gap. Measured against host labels: app text was ~1.19x too large,
+   hence 0.84. */
+html {
+  zoom: 0.84;
+  -webkit-touch-callout: none;
+}
+html, body {
+  height: 100%;
+  max-width: 100%;
+  overflow: hidden;
+}
