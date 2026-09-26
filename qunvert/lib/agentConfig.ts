@@ -1,4 +1,10 @@
+import { defaultLeadForm, parseLeadForm, type LeadFormConfig } from './leadForm'
+import { emptyQuestionnaire, parseQuestionnaire, type QuestionnaireState } from './questionnaire'
+
+/** Legacy. Agents are unified; ordering is controlled by `leadForm.enabled`. */
 export type AgentPurpose = 'leads' | 'support'
+
+export const QUNVERT_BRAND = '#3BBDB5'
 
 export type AgentConfiguration = {
   color: string
@@ -37,6 +43,8 @@ export type AgentConfiguration = {
   notifyHumanPhone: string
   ignoredNumbers: string
   notifyOrderPhone: string
+  questionnaire: QuestionnaireState
+  leadForm: LeadFormConfig
 }
 
 export const DEFAULT_CONFIRMATION_TEMPLATE = `✅ Order Confirmed!
@@ -50,9 +58,9 @@ Information:
 We will contact you shortly for delivery. 🚚`
 
 export const DEFAULT_AGENT_CONFIG: AgentConfiguration = {
-  color: '#6D5EF6',
-  tag: 'Generate leads',
-  purpose: 'leads',
+  color: QUNVERT_BRAND,
+  tag: 'AI agent',
+  purpose: 'support',
   desiredStatus: 'active',
   whatsappNumber: '',
   allProducts: true,
@@ -86,9 +94,18 @@ export const DEFAULT_AGENT_CONFIG: AgentConfiguration = {
   notifyHumanPhone: '',
   ignoredNumbers: '',
   notifyOrderPhone: '',
+  questionnaire: emptyQuestionnaire(),
+  leadForm: defaultLeadForm(false),
 }
 
 export const MAX_AI_REPLIES_PER_CHAT = 60
+/** Parked product feature. Saved form settings stay intact for later reactivation. */
+export const LEAD_GENERATION_AVAILABLE = false
+
+/** Single source of truth: may this agent take orders? */
+export function leadAgentEnabled(config: Pick<AgentConfiguration, 'leadForm'>): boolean {
+  return LEAD_GENERATION_AVAILABLE && !!config.leadForm?.enabled && config.leadForm.fields.length > 0
+}
 
 export function clampMaxResponses(value: unknown): number {
   const n = Number(value)
@@ -130,6 +147,9 @@ export function parseAgentConfig(value: string | object | null | undefined): Age
         : [],
     },
     maxResponses: clampMaxResponses(parsed.maxResponses),
+    questionnaire: parseQuestionnaire(parsed.questionnaire),
+    // Agents created before the lead-form setting existed: "leads" purpose means ordering was on.
+    leadForm: parseLeadForm((parsed as Record<string, unknown>).leadForm, parsed.purpose === 'leads'),
   }
 }
 
@@ -150,6 +170,14 @@ export function blockedPhone(config: AgentConfiguration, phone: string): boolean
     .map(comparablePhone)
     .filter(Boolean)
     .some((blocked) => blocked === candidate)
+}
+
+export function hasAssignedProducts(config: Pick<AgentConfiguration, 'allProducts' | 'productIds'>): boolean {
+  return config.allProducts || config.productIds.length > 0
+}
+
+export function shouldSubmitVariantCarousel(config: AgentConfiguration): boolean {
+  return config.submitVariantsForApproval && hasAssignedProducts(config)
 }
 
 export function normalizedStopWord(value: string | null | undefined): string {

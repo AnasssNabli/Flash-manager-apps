@@ -219,26 +219,41 @@ export async function gatewayProxy(
   })
 }
 
+const PUBLIC_FM_ORIGINS = [
+  'https://platform.flash-manager.com',
+  'https://dev.flash-manager.com',
+] as const
+
+export function allowedFmOrigin(value: string | null): string | null {
+  if (!value) return null
+  try {
+    const origin = new URL(value).origin
+    return (PUBLIC_FM_ORIGINS as readonly string[]).includes(origin) ? origin : null
+  } catch {
+    return null
+  }
+}
+
 /**
- * FlashManager's first-party WhatsApp routes (`/api/whatsapp/*`) sit outside
- * the app gateway and expect the seller's short-lived staff/bridge JWT — the
- * same token the iframe sends as `x-fm-token`. The gateway never grew a
- * `/v1/whatsapp/disconnect` route; this is the one that actually unlinks.
+ * FlashManager's first-party WhatsApp unlink. The app gateway never grew a
+ * `/v1/whatsapp/disconnect` twin, so this hits the host route the platform UI
+ * uses. That route wants a staff JWT, not the short-lived app-bridge token.
  */
-export async function platformWhatsAppDisconnect(staffToken: string): Promise<Response> {
-  if (!FM_HOST || !staffToken) {
+export async function platformWhatsAppDisconnect(staffToken: string, host: string): Promise<Response> {
+  if (!staffToken || !host) {
     return new Response(JSON.stringify({ success: false, error: 'not_connected' }), {
       status: 401,
       headers: { 'Content-Type': 'application/json' },
     })
   }
 
-  return fetch(`${FM_HOST}/api/whatsapp/disconnect`, {
+  return fetch(`${host.replace(/\/$/, '')}/api/whatsapp/disconnect`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${staffToken}`,
       Accept: 'application/json',
       'Content-Type': 'application/json',
+      Cookie: `staff_token=${staffToken}`,
     },
     body: '{}',
     cache: 'no-store',

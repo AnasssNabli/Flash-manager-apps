@@ -6,11 +6,11 @@ import type { Product } from '@/lib/products'
 const BP = process.env.NEXT_PUBLIC_BASE_PATH || '/whatsapp-ai-agents'
 
 const inputCls =
-  'w-full h-11 px-3 rounded-2xl border border-black/[0.08] dark:border-white/12 bg-white dark:bg-white/[0.06] text-sm outline-none focus:border-[#25D366]'
+  'w-full h-11 px-3 rounded-2xl border border-black/[0.08] dark:border-white/12 bg-white dark:bg-white/[0.06] text-sm outline-none focus:border-primary'
 const areaCls =
-  'w-full min-h-[140px] px-3 py-2.5 rounded-2xl border border-black/[0.08] dark:border-white/12 bg-white dark:bg-white/[0.06] text-sm outline-none focus:border-[#25D366] resize-y'
+  'w-full min-h-[140px] px-3 py-2.5 rounded-2xl border border-black/[0.08] dark:border-white/12 bg-white dark:bg-white/[0.06] text-sm outline-none focus:border-primary resize-y'
 const btn =
-  'h-11 px-5 rounded-full text-sm font-semibold bg-[#25D366] text-white disabled:opacity-40'
+  'h-11 px-5 rounded-full text-sm font-semibold bg-primary text-white disabled:opacity-40'
 const btnGhost =
   'h-11 px-5 rounded-full text-sm font-semibold border border-black/[0.08] dark:border-white/15'
 
@@ -230,7 +230,7 @@ export default function CampaignsPanel({
               <span>{promote.title}</span>
             </button>
           ) : (
-            <button type="button" className="text-sm text-[#128C7E]" onClick={() => setPickFor('promote')}>{t('searchProducts')}</button>
+            <button type="button" className="text-sm text-primary dark:text-primary" onClick={() => setPickFor('promote')}>{t('searchProducts')}</button>
           )}
         </div>
         <textarea className={areaCls} value={message} onChange={(e) => setMessage(e.target.value)} placeholder={t('messagePh')} />
@@ -243,14 +243,14 @@ export default function CampaignsPanel({
           <button
             type="button"
             onClick={() => setWho('chats')}
-            className={`w-full p-4 rounded-2xl border text-start ${who === 'chats' ? 'border-[#25D366] bg-[#25D366]/8' : 'border-black/[0.06] dark:border-white/10'}`}
+            className={`w-full p-4 rounded-2xl border text-start ${who === 'chats' ? 'border-primary bg-primary/10' : 'border-black/[0.06] dark:border-white/10'}`}
           >
             <p className="font-semibold text-sm">{t('whoChats')}</p>
           </button>
           <button
             type="button"
             onClick={() => { setWho('ordered'); setPickFor('ordered') }}
-            className={`w-full p-4 rounded-2xl border text-start ${who === 'ordered' ? 'border-[#25D366] bg-[#25D366]/8' : 'border-black/[0.06] dark:border-white/10'}`}
+            className={`w-full p-4 rounded-2xl border text-start ${who === 'ordered' ? 'border-primary bg-primary/10' : 'border-black/[0.06] dark:border-white/10'}`}
           >
             <p className="font-semibold text-sm">{t('whoOrdered')}</p>
             <p className="text-xs text-black/45 mt-1">{t('whoOrderedHint')}</p>
@@ -262,7 +262,7 @@ export default function CampaignsPanel({
                   key={p.id}
                   type="button"
                   onClick={() => setOrdered((prev) => prev.filter((x) => x.id !== p.id))}
-                  className="h-8 px-3 rounded-full text-xs font-medium bg-[#25D366]/12"
+                  className="h-8 px-3 rounded-full text-xs font-medium bg-primary/15"
                 >
                   {p.title}
                 </button>
@@ -307,8 +307,8 @@ export default function CampaignsPanel({
         <div className="space-y-2">
           <p className="text-xs font-medium text-black/45">{t('whenLabel')}</p>
           <div className="flex gap-2">
-            <button type="button" className={`${btnGhost} ${when === 'now' ? 'border-[#25D366]' : ''}`} onClick={() => setWhen('now')}>{t('sendNow')}</button>
-            <button type="button" className={`${btnGhost} ${when === 'schedule' ? 'border-[#25D366]' : ''}`} onClick={() => setWhen('schedule')}>{t('schedule')}</button>
+            <button type="button" className={`${btnGhost} ${when === 'now' ? 'border-primary' : ''}`} onClick={() => setWhen('now')}>{t('sendNow')}</button>
+            <button type="button" className={`${btnGhost} ${when === 'schedule' ? 'border-primary' : ''}`} onClick={() => setWhen('schedule')}>{t('schedule')}</button>
           </div>
           {when === 'schedule' && (
             <input
@@ -371,7 +371,7 @@ export default function CampaignsPanel({
                     ) : null}
                   </span>
                   <span className="text-xs">{c.sent}/{c.total || 0}</span>
-                  <span className="text-sm font-semibold text-[#128C7E]">{t('convRate', { n: c.conversionRate })}</span>
+                  <span className="text-sm font-semibold text-primary">{t('convRate', { n: c.conversionRate })}</span>
                 </button>
                 {openId === c.id && (
                   <div className="px-4 pb-4 space-y-2">

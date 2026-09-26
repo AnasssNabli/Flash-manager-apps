@@ -167,8 +167,16 @@ export default function ConnectionHealth({
   }
 
   return (
-    <div className="min-h-screen bg-[#f7f7f5] dark:bg-[#0b141a] px-4 py-8 sm:py-12">
-      <div className="max-w-xl mx-auto">
+    <div className="h-full overflow-y-auto overflow-x-hidden overscroll-contain bg-[#f7f7f5] dark:bg-[#0b141a]">
+      <div className="max-w-xl mx-auto px-4 py-6 sm:py-8">
+        <button
+          type="button"
+          onClick={onOpenInbox}
+          className="mb-5 inline-flex items-center gap-1.5 text-[13px] font-semibold text-gray-600 dark:text-[#d1d7db] hover:text-gray-900 dark:hover:text-white transition-colors"
+        >
+          <Icon icon="solar:arrow-left-linear" className="text-base" />
+          Back
+        </button>
         {/* ── Outcome ─────────────────────────────────────────────────────── */}
         <div className="text-center mb-7">
           <div

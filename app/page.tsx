@@ -286,15 +286,25 @@ export default function Home() {
   if (platformInbox) {
     return (
       <>
-        <Inbox
-          mediaTicket={mediaTicket}
-          connectedPhone={status?.phone?.displayPhone || 'Platform inbox'}
-          sharedNumber={false}
-          platformInbox
-          health={null}
-          onOpenSettings={() => {}}
-          addToast={addToast}
-        />
+        {showSettings ? (
+          <ConnectCard
+            connectedPhone={status?.phone?.displayPhone || 'Platform inbox'}
+            onBack={() => setShowSettings(false)}
+            onConnected={handleConnected}
+            onDisconnected={handleDisconnected}
+            addToast={addToast}
+          />
+        ) : (
+          <Inbox
+            mediaTicket={mediaTicket}
+            connectedPhone={status?.phone?.displayPhone || 'Platform inbox'}
+            sharedNumber={false}
+            platformInbox
+            health={null}
+            onOpenSettings={() => setShowSettings(true)}
+            addToast={addToast}
+          />
+        )}
         <ToastStack toasts={toasts} />
       </>
     )
@@ -377,6 +387,7 @@ export default function Home() {
           onBack={connected ? () => setShowSettings(false) : undefined}
           onConnected={handleConnected}
           onDisconnected={handleDisconnected}
+          addToast={addToast}
         />
       ) : showHealth && health ? (
         <ConnectionHealth

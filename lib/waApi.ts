@@ -22,6 +22,59 @@ export function setTokenRefresher(fn: (() => Promise<string | null>) | null) {
   refresher = fn
 }
 
+export function currentSessionToken() {
+  return sessionToken
+}
+
+const FM_HOST_ORIGINS = ['https://platform.flash-manager.com', 'https://dev.flash-manager.com'] as const
+
+/** The FlashManager tab that embedded this iframe — platform or dev. */
+export function fmHostOrigin(): string {
+  if (typeof window === 'undefined') return FM_HOST_ORIGINS[0]
+  const ancestor = window.location.ancestorOrigins?.[0]
+  if (ancestor && (FM_HOST_ORIGINS as readonly string[]).includes(ancestor)) return ancestor
+  try {
+    if (document.referrer) {
+      const origin = new URL(document.referrer).origin
+      if ((FM_HOST_ORIGINS as readonly string[]).includes(origin)) return origin
+    }
+  } catch { /* ignore */ }
+  return FM_HOST_ORIGINS[0]
+}
+
+function readCookie(name: string): string | null {
+  if (typeof document === 'undefined') return null
+  for (const part of document.cookie.split(';')) {
+    const [key, ...rest] = part.trim().split('=')
+    if (key === name) return decodeURIComponent(rest.join('='))
+  }
+  return null
+}
+
+/**
+ * Native `/api/whatsapp/disconnect` wants the seller’s FlashManager staff
+ * JWT, not the short-lived app-bridge token. Prefer a readable cookie, then
+ * the parent tab’s localStorage when the embed is same-origin.
+ */
+export function staffAuthToken(): string | null {
+  const fromCookie = readCookie('staff_token') || readCookie('affiliate_token')
+  if (fromCookie) return fromCookie
+  try {
+    return (
+      window.parent.localStorage.getItem('staff_token') ||
+      window.parent.localStorage.getItem('affiliate_token')
+    )
+  } catch {
+    return null
+  }
+}
+
+export function hostDisconnectSucceeded(res: Response | null, json: { success?: boolean; error?: string } | null): boolean {
+  if (!res?.ok) return false
+  if (json?.success === false || json?.error) return false
+  return true
+}
+
 export async function apiFetch(path: string, init: RequestInit = {}, allowRetry = true): Promise<Response> {
   const headers = new Headers(init.headers)
   if (sessionToken) headers.set('x-fm-token', sessionToken)

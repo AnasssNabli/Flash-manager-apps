@@ -1,10 +1,12 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Icon } from '@iconify/react'
 import EmbeddedSignupButton, { type ConnectOutcome } from './EmbeddedSignupButton'
+import DisconnectModal from './DisconnectModal'
 import { daysUntilSunset, sunsetDateLabel } from '@/lib/sunset'
 import { apiJson } from '@/lib/waApi'
+import type { Toast } from './Toasts'
 
 interface ConnectCardProps {
   /** Already connected — the card is in "reconnect / switch number" mode. */
@@ -16,6 +18,7 @@ interface ConnectCardProps {
   onConnected: (outcome: ConnectOutcome) => void
   /** Own number is linked — drop it from FlashManager. */
   onDisconnected?: () => void
+  addToast?: (type: Toast['type'], message: string) => void
 }
 
 /**
@@ -31,38 +34,29 @@ export default function ConnectCard({
   onBack,
   onConnected,
   onDisconnected,
+  addToast,
 }: ConnectCardProps) {
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [disconnecting, setDisconnecting] = useState(false)
-  const [confirmDisconnect, setConfirmDisconnect] = useState(false)
-
-  useEffect(() => {
-    if (!confirmDisconnect || disconnecting) return
-    const timer = window.setTimeout(() => setConfirmDisconnect(false), 6000)
-    return () => window.clearTimeout(timer)
-  }, [confirmDisconnect, disconnecting])
+  const [showDisconnectModal, setShowDisconnectModal] = useState(false)
+  /** Inbox already works — Back is present even when /status omitted the display number. */
+  const alreadyLinked = Boolean(onBack || connectedPhone)
 
   const disconnectNumber = async () => {
-    if (!connectedPhone || disconnecting) return
-    if (!confirmDisconnect) {
-      setConfirmDisconnect(true)
-      return
-    }
+    if (!alreadyLinked || disconnecting) return
     setDisconnecting(true)
-    setErrorMsg(null)
     try {
       const res = await apiJson<{ success?: boolean; error?: string }>('/wa/disconnect', {
         method: 'POST',
       })
-      if (!res?.success) {
-        setErrorMsg(res?.error || 'Could not disconnect this number.')
-        setConfirmDisconnect(false)
+      if (res?.success) {
+        setShowDisconnectModal(false)
+        onDisconnected?.()
         return
       }
-      onDisconnected?.()
-    } catch {
-      setErrorMsg('Could not disconnect this number.')
-      setConfirmDisconnect(false)
+      addToast?.('error', res?.error || 'Could not disconnect this number.')
+    } catch (err) {
+      addToast?.('error', err instanceof Error ? err.message : 'Could not disconnect this number.')
     } finally {
       setDisconnecting(false)
     }
@@ -121,33 +115,25 @@ export default function ConnectCard({
           ) : null}
 
           <div className="relative bg-white dark:bg-[#1f2c33] border border-[rgba(37,211,102,0.35)] dark:border-[rgba(37,211,102,0.4)] rounded-2xl p-6 sm:p-7 flex flex-col">
-            <div className="w-11 h-11 rounded-xl bg-[#25D366]/10 flex items-center justify-center mb-4">
-              <Icon icon="solar:qr-code-bold-duotone" className="text-2xl text-[#25D366]" />
-            </div>
-
-            <div className="flex items-start justify-between gap-3">
-              <h2 className="text-lg sm:text-xl font-bold text-gray-900 dark:text-white">
-                Use your own WhatsApp Business
-              </h2>
-              {connectedPhone ? (
+            <div className="flex items-start justify-between gap-3 mb-4">
+              <div className="w-11 h-11 rounded-xl bg-[#25D366]/10 flex items-center justify-center">
+                <Icon icon="solar:qr-code-bold-duotone" className="text-2xl text-[#25D366]" />
+              </div>
+              {alreadyLinked ? (
                 <button
                   type="button"
-                  onClick={disconnectNumber}
-                  disabled={disconnecting}
-                  className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/40 px-2.5 py-1.5 text-[12px] font-semibold text-red-700 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-950/70 disabled:opacity-60 transition-colors"
+                  onClick={() => setShowDisconnectModal(true)}
+                  className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/40 px-2.5 py-1.5 text-[12px] font-semibold text-red-700 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-950/70 transition-colors"
                 >
-                  <Icon
-                    icon={disconnecting ? 'svg-spinners:ring-resize' : 'solar:close-circle-bold'}
-                    className="text-sm"
-                  />
-                  {disconnecting
-                    ? 'Disconnecting…'
-                    : confirmDisconnect
-                      ? 'Confirm disconnect'
-                      : 'Disconnect'}
+                  <Icon icon="solar:logout-2-bold" className="text-sm" />
+                  Disconnect
                 </button>
               ) : null}
             </div>
+
+            <h2 className="text-lg sm:text-xl font-bold text-gray-900 dark:text-white">
+              Use your own WhatsApp Business
+            </h2>
             <p className="mt-1 text-[13px] text-gray-500 dark:text-[#8696a0]">
               Connect the number that’s already on your phone with a code — no SMS verification.
             </p>
@@ -215,7 +201,7 @@ export default function ConnectCard({
       <div className="flex-shrink-0 border-t border-black/5 dark:border-white/10 bg-[#f7f7f5]/95 dark:bg-[#0b141a]/95 backdrop-blur px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
         <div className="max-w-xl mx-auto">
           <EmbeddedSignupButton
-            label={connectedPhone ? 'Reconnect or switch number' : 'Connect your WhatsApp Business'}
+            label={alreadyLinked ? 'Reconnect or switch number' : 'Connect your WhatsApp Business'}
             onConnected={onConnected}
             onError={setErrorMsg}
           />
@@ -224,6 +210,15 @@ export default function ConnectCard({
           )}
         </div>
       </div>
+
+      {showDisconnectModal && (
+        <DisconnectModal
+          phone={connectedPhone}
+          disconnecting={disconnecting}
+          onCancel={() => { if (!disconnecting) setShowDisconnectModal(false) }}
+          onConfirm={() => { void disconnectNumber() }}
+        />
+      )}
     </div>
   )
 }

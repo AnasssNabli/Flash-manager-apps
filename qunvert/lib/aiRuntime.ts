@@ -1,7 +1,11 @@
 import OpenAI, { toFile } from 'openai'
-import type { AgentConfiguration } from './agentConfig'
+import { leadAgentEnabled, shouldSubmitVariantCarousel, type AgentConfiguration } from './agentConfig'
+import { languageName, MIXED_SCRIPT_RULES } from './language'
+import { leadFieldsToCollect, leadFlowReady } from './leadForm'
+import type { CustomerOrder } from './orders'
 import type { Product } from './products'
 import { collapseRepeatedPhrases, isDoNotAnswerTool, normalizeToolName } from './replyQuality'
+import type { MatchedVariant } from './variantCarousel'
 
 const MODEL = 'gpt-5.4-mini'
 
@@ -22,7 +26,7 @@ export type HistoryItem = {
 }
 
 export type ToolAction = {
-  name: 'order_summary_sent' | 'order_confirmed' | 'request_human_agent' | 'donotanswer'
+  name: 'order_summary_sent' | 'order_confirmed' | 'send_order_form' | 'send_variant_carousel' | 'send_order_variants' | 'request_human_agent' | 'donotanswer'
   arguments: Record<string, unknown>
 }
 
@@ -50,6 +54,20 @@ export type AgentGenerationInput = {
   recentOrderWithin10Min: boolean
   images?: { url: string; caption?: string }[]
   compressedCatalogue?: boolean
+  /** Seller's FlashManager app language (en|fr|ar). Used until the customer's language is clear. */
+  defaultLanguage?: string | null
+  /** Exact catalogue variant selected through a WhatsApp carousel on this turn. */
+  selectedVariant?: MatchedVariant | null
+  /** Current FlashManager order context for this WhatsApp customer. */
+  existingOrders?: CustomerOrder[]
+  /** Result of the deterministic update attempted after a carousel button click. */
+  orderEditResult?: {
+    orderId: string
+    orderName: string
+    status: 'updated' | 'failed'
+    shopifyUpdated?: boolean
+    error?: string
+  } | null
 }
 
 const CUSTOMER_KEYS = new Set([
@@ -57,6 +75,7 @@ const CUSTOMER_KEYS = new Set([
   'customer_city',
   'customer_address',
   'customer_phone',
+  'customer_province',
 ])
 
 export function extractTemplateFields(template: string): {
@@ -100,6 +119,8 @@ export function normalizePlaceholder(value: string): string | null {
     name: 'customer_name',
     city: 'customer_city',
     address: 'customer_address',
+    province: 'customer_province',
+    region: 'customer_province',
     'phone number': 'customer_phone',
     phone: 'customer_phone',
     'product name': 'product_name',
@@ -182,19 +203,29 @@ export const CONTEXT_DISCIPLINE = `CONTEXT DISCIPLINE:
 - A question is allowed only when all of these are true: you already know how you will use the answer to finish the next concrete step; that fact is missing from the thread, seller instructions, and catalogue; and without it you cannot take any useful action.
 - If those conditions are not met, do not ask. Answer from what you have, say you do not have that information, or call request_human_agent with reason cannot_help.
 - Never ask the customer to explain an error they already pasted, confirm whether they followed steps, or name technical terms.
-- In sales, the only allowed questions are missing required order fields after buying intent is clear. Never ask out-of-context product, payment, or process questions.
-- In support, solve from seller instructions and the thread. If you cannot actually fix it, say so in one short line and hand off. Do not make the customer angrier with more questions.`
+- While taking an order, the only allowed questions are missing required order fields after buying intent is clear. Never ask out-of-context product, payment, or process questions.
+- For support, solve from seller instructions and the thread. If you cannot actually fix it, say so in one short line and hand off. Do not make the customer angrier with more questions.`
 
-const STATIC_PREFIX = `You are a WhatsApp store representative.
+function staticPrefix(defaultLanguage?: string | null) {
+  const preferred = languageName(defaultLanguage)
+  return `You are a WhatsApp store representative.
 
 LANGUAGE:
 - Reply in the customer's established language. A single borrowed word never changes language.
+${preferred
+    ? `- Store language: ${preferred}. Use it for your first reply and whenever the customer's language is not clear yet (emoji-only, a bare product name, a number). Once the customer writes in another language, mirror them.`
+    : '- If the customer\'s language is not clear yet, use the language of the seller instructions.'}
+- ${MIXED_SCRIPT_RULES.split('\n').join('\n- ')}
+- Greet only in your very first message of a conversation. Never start later replies with a greeting.
 - Keep replies extremely short: normally one or two sentences and at most 400 characters.
 - Sound human. Never say you are an AI. Never repeat greetings, questions, clauses, or sentence openings. Never write the same sentence twice in one reply.
+- Never describe your own feelings or state: do not say you are happy, glad, fine, working, available, or "here if needed."
+- When the customer only confirms that something works, answer with one neutral acknowledgement in their language. Do not add a generic offer of more help.
 
-${CONTEXT_DISCIPLINE}
+${CONTEXT_DISCIPLINE}`
+}
 
-TRUTH AND SAFETY:
+const STATIC_SUFFIX = `TRUTH AND SAFETY:
 - Use only the seller instructions and current catalogue. If information is absent, say you do not have it. Do not fill the gap with questions that cannot produce the missing fact.
 - Never expose a {media:filename} token as visible text. Keep tokens only when intentionally sending that exact uploaded file.
 - Send media only when the customer asks or seller instructions explicitly require it.
@@ -216,60 +247,132 @@ ${tone}
 FORBIDDEN:
 ${forbidden}
 
-SELLER INSTRUCTIONS — highest business priority:
+SELLER INSTRUCTIONS — apply unless they conflict with the role, safety, or order rules above:
 ${input.config.instructions.trim() || 'Answer clearly and help the customer.'}`
 }
 
-function ecommercePrompt(input: AgentGenerationInput) {
-  const fields = extractTemplateFields(input.config.confirmationTemplate)
+/** Customer fields the AI must collect in chat before an order (lead form first, template as fallback). */
+export function orderCustomerFields(config: AgentConfiguration): { key: string; label: string; required: boolean }[] {
+  if (leadAgentEnabled(config)) {
+    return leadFieldsToCollect(config.leadForm).map((field) => ({ key: field.key, label: field.label, required: field.required }))
+  }
+  const fields = extractTemplateFields(config.confirmationTemplate)
+  return fields.keys
+    .filter((key) => CUSTOMER_KEYS.has(key) && key !== 'customer_phone')
+    .map((key) => ({ key, label: key.replace(/^customer_/, '').replace(/_/g, ' '), required: true }))
+}
+
+export function formatCustomerOrders(orders: CustomerOrder[]): string {
+  if (!orders.length) return 'EXISTING ORDERS: none found for this WhatsApp number.'
+  return `EXISTING ORDERS — newest first:\n${orders.slice(0, 5).map((order) => {
+    const items = (order.items || []).map((item) => {
+      const variant = item.variant ? ` — ${item.variant}` : ''
+      const sku = item.sku ? ` (SKU ${item.sku})` : ''
+      const price = item.price == null ? '' : ` @ ${item.price} ${order.currency || ''}`.trimEnd()
+      return `${Math.max(1, Number(item.qty || 1))}× ${item.title}${variant}${sku}${price}`
+    }).join('; ') || 'items unavailable'
+    const carousel = order.variants
+      ? `variant carousel ready for ${order.variants.productTitle} (${order.variants.cardCount} choices)`
+      : 'no variant carousel'
+    return `- ${order.name || order.id} [id=${order.id}] · confirmation=${order.confirmation || 'unknown'} · fulfillment=${order.fulfillment || 'unfulfilled'} · financial=${order.financial || 'unknown'} · ${items} · ${carousel}`
+  }).join('\n')}`
+}
+
+function orderingBlock(input: AgentGenerationInput) {
+  const { config } = input
+  if (!leadAgentEnabled(config)) {
+    const orders = input.existingOrders || []
+    const newest = orders[0]
+    const confirmed = String(newest?.confirmation || '').toLowerCase().includes('confirm')
+    const createdAt = newest ? new Date(newest.createdAt).getTime() : 0
+    const recent = Number.isFinite(createdAt) && Date.now() - createdAt < 24 * 60 * 60 * 1000
+    const customerType = !orders.length
+      ? 'CUSTOMER WITH NO ORDER FOUND'
+      : confirmed && recent
+        ? 'CUSTOMER WHO JUST CONFIRMED AN ORDER'
+        : confirmed
+          ? 'EXISTING CUSTOMER WITH A CONFIRMED ORDER'
+          : 'EXISTING CUSTOMER WITH AN ORDER'
+    return `ORDERS AND CUSTOMER TYPE:
+- Customer type: ${customerType}.
+${formatCustomerOrders(orders)}
+
+ORDER RULES:
+- This agent does not create new orders. It supports customers and can help change a variant on an existing order.
+- Always use the order context above. Never ask for order details already present there.
+- If the customer asks for another color, size, or variant for an existing order, immediately call send_order_variants for the matching order. Do not ask whether they want to change it.
+- Even if they type an exact choice such as "I want red" or "change S to M", do not update from text. Call send_order_variants and tell them to use the Choose button.
+- An order may be updated only after a structured carousel button click. Never claim an order changed from a normal text reply.
+- If several orders genuinely match and the intended one cannot be inferred from the product/thread, ask only which ordered product they mean.
+- For a new purchase request, answer from seller instructions without taking an order; hand off only if needed.`
+  }
+  const fields = orderCustomerFields(config)
+  const requiredList = fields.filter((field) => field.required).map((field) => field.label).join(', ') || '(none)'
+  const optionalList = fields.filter((field) => !field.required).map((field) => field.label).join(', ')
+  const useForm = leadFlowReady(config.leadForm)
+  const carouselProducts = input.products.filter((product) => (product.variants || []).length > 1)
+  const carousel = shouldSubmitVariantCarousel(config) && carouselProducts.length
+    ? `- VARIANT CAROUSEL AVAILABLE for: ${carouselProducts.map((product) => product.title).join(', ')}. When the customer explicitly asks to see variants, colors, sizes, or options for one of these products, call send_variant_carousel. Do not send it for general product questions, and never send it twice.
+- After the customer chooses a carousel card, that exact selected variant and catalogue price are authoritative. Do not resend the carousel; continue the order using that selection.`
+    : '- No validated variant carousel is available. Answer variant questions in short text from the catalogue.'
+  const collect = useForm
+    ? `- ORDER FORM AVAILABLE. When the customer clearly wants to buy — including immediately after choosing a carousel variant — call send_order_form once with the items (exact catalogue names, selected variant price, quantity) and a natural one-sentence message written for this conversation in the customer's language. This message must be newly generated, never copied from a fixed template. Do not ask for delivery details in chat — the form collects ${fields.map((field) => field.label).join(', ')}.
+- If the customer already typed all required details (${requiredList}) instead of using the form, skip the form: show one order summary, call order_summary_sent, then order_confirmed when they confirm.
+- Never send the form twice in a conversation. If it was already sent, wait for the submission or answer their questions.`
+    : `- When the customer clearly wants to buy, collect only the missing required details: ${requiredList}.${optionalList ? ` Optional, only if offered: ${optionalList}.` : ''} Ask for several in one short message, never one by one.
+- Show one complete order summary, then call order_summary_sent in that same turn.
+- After the customer confirms that summary, call order_confirmed immediately. Never repeat the summary.`
+  return `ORDERS:
+- Buying intent must come from the customer ("I want to order", "how do I buy", quantity + product). Never steer a support question toward a purchase; many customers already ordered.
+- Use exact catalogue names and prices. Quantity defaults to 1 unless the customer states another quantity.
+- Use the WhatsApp phone ${input.customerPhone} for customer_phone; never ask for it unless the customer gives a replacement.
+${carousel}
+${collect}
+- If multiple products are ordered, use items with one entry per product.
+- The only questions allowed while taking an order are missing required customer fields.
+
+CONFIRMATION TEMPLATE (sent automatically after order_confirmed):
+${config.confirmationTemplate}`
+}
+
+function agentPrompt(input: AgentGenerationInput) {
   const catalogueLabel = input.compressedCatalogue ? 'PRODUCT CATALOGUE (compressed)' : 'PRODUCT CATALOGUE'
-  return `${STATIC_PREFIX}
+  return `${staticPrefix(input.defaultLanguage)}
+
+${STATIC_SUFFIX}
 
 ROLE:
-- Act as the seller. Answer only what was asked; do not push a sale after an information request.
-- Use exact catalogue names and prices. Quantity defaults to 1 unless the customer states another quantity.
-- When buying intent is clear, collect only missing customer fields required by the confirmation template: ${fields.keys.filter((key) => CUSTOMER_KEYS.has(key)).join(', ') || '(none)'}.
-- Use the WhatsApp phone ${input.customerPhone} for customer_phone; never ask for it unless the customer explicitly gives a replacement.
-- Show one complete order summary, then call order_summary_sent in that same turn.
-- After the customer confirms that summary, call order_confirmed immediately. Never repeat the summary.
-- If multiple products are ordered, use order_data.items with one entry per product.
-- The only questions allowed while selling are missing required customer fields. Never ask out-of-context questions.
+- You are the store's WhatsApp assistant: answer product and after-sales questions (delivery, returns, sizes, tracking, usage) from seller instructions and the catalogue.
+- Answer only what was asked. Do not upsell or push a sale after an information request.
+- Do not run a troubleshooting interview. If the customer already stated the problem or pasted an error, use that and answer or hand off.
 - Never call request_human_agent because the customer is confused or asked you to wait.
-- If seller instructions and the catalogue are not enough to complete the request, call request_human_agent with reason cannot_help. Do not stall with extra questions.
-- After a human handoff message, stop. Do not continue the sale until a person has handled the chat.
+- If seller instructions, the catalogue, and this thread are not enough to solve the request, call request_human_agent with reason cannot_help in the same turn. Do not ask whether they want a human and do not stall with extra questions.
+- After a human handoff message, stop. Do not keep answering until a person has handled the chat.
+
+${orderingBlock(input)}
 
 ${sellerBlock(input)}
-
-CONFIRMATION TEMPLATE:
-${input.config.confirmationTemplate}
 
 ${catalogueLabel}:
 ${formatProductCatalogue(input.products, !!input.compressedCatalogue)}
 
 ${input.recentOrderWithin10Min ? 'RECENT ORDER: An order was confirmed in the last 10 minutes. Do not confirm another duplicate order.' : ''}
-${openerBlock(input.config, input.isFirstCustomerMessage)}
-
-CONTEXT — oldest to newest:
-${historyText(input.history) || 'No previous conversation.'}`
-}
-
-function supportPrompt(input: AgentGenerationInput) {
-  const catalogueLabel = input.compressedCatalogue ? 'REFERENCE CATALOGUE (compressed)' : 'REFERENCE CATALOGUE'
-  return `${STATIC_PREFIX}
-
-ROLE:
-- Provide customer support, not sales. The catalogue is reference-only.
-- Do not create orders or push products.
-- Do not run a troubleshooting interview. If the customer already stated the problem or pasted an error, use that and answer or hand off.
-- Never call request_human_agent because the customer is confused or asked you to wait.
-- If you cannot solve the issue from seller instructions and this thread, call request_human_agent with reason cannot_help in the same turn. Do not ask whether they want a human.
-- After a human handoff message, stop. Do not keep answering until a person has handled the chat.
-
-${sellerBlock(input)}
-
-${catalogueLabel}:
-${formatProductCatalogue(input.products, !!input.compressedCatalogue)}
-
+${input.selectedVariant && input.orderEditResult?.status === 'updated'
+    ? `ORDER UPDATE COMPLETED — authoritative result from a carousel button click:
+- Order: ${input.orderEditResult.orderName} (${input.orderEditResult.orderId})
+- Product: ${input.selectedVariant.productName}
+- Variant: ${input.selectedVariant.variantTitle}
+- Price: ${input.selectedVariant.price} ${input.selectedVariant.currency}
+${input.selectedVariant.sku ? `- SKU: ${input.selectedVariant.sku}` : ''}
+Tell the customer clearly that their order now uses ${input.selectedVariant.variantTitle}. Do not call another tool or resend the carousel.${input.orderEditResult.shopifyUpdated ? ' The Shopify order was synchronized too.' : ''}`
+    : input.selectedVariant && input.orderEditResult?.status === 'failed'
+      ? `ORDER UPDATE FAILED after a valid carousel choice:
+- Order: ${input.orderEditResult.orderName} (${input.orderEditResult.orderId})
+- Requested variant: ${input.selectedVariant.variantTitle}
+Do not claim the order changed. Apologize briefly and call request_human_agent with reason cannot_help so a person can apply the selected variant.`
+      : input.selectedVariant
+        ? `A carousel variant was selected but its order could not be resolved safely. Do not claim any update; call request_human_agent with reason cannot_help.`
+    : ''}
 ${openerBlock(input.config, input.isFirstCustomerMessage)}
 
 CONTEXT — oldest to newest:
@@ -278,6 +381,7 @@ ${historyText(input.history) || 'No previous conversation.'}`
 
 function orderSchema(config: AgentConfiguration) {
   const fields = extractTemplateFields(config.confirmationTemplate)
+  const leadFields = orderCustomerFields(config)
   const properties: Record<string, unknown> = {
     items: {
       type: 'array',
@@ -287,6 +391,9 @@ function orderSchema(config: AgentConfiguration) {
           product_name: { type: 'string' },
           quantity: { type: 'number' },
           price: { type: 'string' },
+          variant_id: { type: 'string' },
+          variant_title: { type: 'string' },
+          sku: { type: 'string' },
         },
         required: ['product_name', 'quantity', 'price'],
         additionalProperties: false,
@@ -301,15 +408,49 @@ function orderSchema(config: AgentConfiguration) {
     customer_city: { type: 'string' },
     customer_address: { type: 'string' },
     customer_phone: { type: 'string' },
+    customer_province: { type: 'string' },
   }
   for (const key of fields.keys) {
     if (!properties[key]) properties[key] = { type: 'string' }
   }
-  const required = ['total_amount', 'currency', ...fields.keys.filter((key) => key.startsWith('customer_') && key !== 'customer_phone')]
+  for (const field of leadFields) {
+    if (!properties[field.key]) properties[field.key] = { type: 'string', description: field.label }
+  }
+  const required = [
+    'total_amount',
+    'currency',
+    ...(leadAgentEnabled(config)
+      ? leadFields.filter((field) => field.required).map((field) => field.key)
+      : fields.keys.filter((key) => key.startsWith('customer_') && key !== 'customer_phone')),
+  ]
   return { type: 'object', properties, required: [...new Set(required)], additionalProperties: false }
 }
 
-function tools(config: AgentConfiguration) {
+function itemsSchema() {
+  return {
+    type: 'array',
+    items: {
+      type: 'object',
+      properties: {
+        product_name: { type: 'string' },
+        quantity: { type: 'number' },
+        price: { type: 'string' },
+        variant_id: { type: 'string' },
+        variant_title: { type: 'string' },
+        sku: { type: 'string' },
+      },
+      required: ['product_name', 'quantity', 'price'],
+      additionalProperties: false,
+    },
+  }
+}
+
+function tools(
+  config: AgentConfiguration,
+  products: Product[],
+  existingOrders: CustomerOrder[] = [],
+  selectedVariant?: MatchedVariant | null,
+) {
   const skip = {
     type: 'function',
     name: 'donotanswer',
@@ -342,9 +483,76 @@ function tools(config: AgentConfiguration) {
       additionalProperties: false,
     },
   }
-  if (config.purpose === 'support') return [skip, human]
+  const editableOrders = selectedVariant
+    ? []
+    : existingOrders.filter((order) => order.variants && order.variants.cardCount > 0)
+  const orderVariants = editableOrders.length
+    ? [{
+        type: 'function',
+        name: 'send_order_variants',
+        description: 'Send the existing order\'s WhatsApp variant carousel immediately when the customer asks to change color, size, or variant. Use this even when they typed the desired option; only the carousel button may authorize the update.',
+        parameters: {
+          type: 'object',
+          properties: {
+            response: { type: 'string', description: 'Short message in the customer\'s language asking them to choose using the button.' },
+            fallback_response: { type: 'string', description: 'Short message in the customer\'s language saying the options could not be opened right now. Do not claim a person was notified.' },
+            order_id: { type: 'string', enum: editableOrders.map((order) => order.id) },
+          },
+          required: ['response', 'fallback_response', 'order_id'],
+          additionalProperties: false,
+        },
+      }]
+    : []
+  if (!leadAgentEnabled(config)) return [skip, ...orderVariants, human]
+  const carouselProducts = shouldSubmitVariantCarousel(config)
+    ? products.filter((product) => (product.variants || []).length > 1)
+    : []
+  const carousel = carouselProducts.length
+    ? [{
+        type: 'function',
+        name: 'send_variant_carousel',
+        description: 'Send the approved WhatsApp variant carousel only when the customer explicitly asks to see options, colors, sizes, or variants for one specific product. Do not use after a variant was selected, for a product with one/no variants, or to push a sale.',
+        parameters: {
+          type: 'object',
+          properties: {
+            response: { type: 'string', description: 'One short natural sentence in the customer\'s language introducing the choices.' },
+            product_name: { type: 'string', enum: carouselProducts.map((product) => product.title) },
+          },
+          required: ['response', 'product_name'],
+          additionalProperties: false,
+        },
+      }]
+    : []
+  const form = leadFlowReady(config.leadForm)
+    ? [{
+        type: 'function',
+        name: 'send_order_form',
+        description: 'Call once when the customer clearly wants to buy. Sends the WhatsApp order form that collects their delivery details. Include the items they want with catalogue prices. Do not call again in the same conversation.',
+        parameters: {
+          type: 'object',
+          properties: {
+            response: { type: 'string', description: 'One short sentence shown above the form button, in the customer\'s language.' },
+            pending_data: {
+              type: 'object',
+              properties: {
+                items: itemsSchema(),
+                total_amount: { type: 'string' },
+                currency: { type: 'string' },
+              },
+              required: ['items', 'total_amount', 'currency'],
+              additionalProperties: false,
+            },
+          },
+          required: ['response', 'pending_data'],
+          additionalProperties: false,
+        },
+      }]
+    : []
   return [
     skip,
+    ...orderVariants,
+    ...carousel,
+    ...form,
     {
       type: 'function',
       name: 'order_summary_sent',
@@ -586,10 +794,10 @@ Rules for this turn:
 Draft the exact reply now, or call donotanswer.`
   }
   const run = (payload: AgentGenerationInput) => generateWithFallback(
-    payload.config.purpose === 'support' ? supportPrompt(payload) : ecommercePrompt(payload),
+    agentPrompt(payload),
     userPrompt(payload),
     payload.ownerId,
-    tools(payload.config),
+    tools(payload.config, payload.products, payload.existingOrders, payload.selectedVariant),
     payload.images,
   )
   let result
@@ -629,7 +837,7 @@ export async function generateFollowUp(opts: {
     messages: [
       {
         role: 'system',
-        content: `Write one short WhatsApp follow-up for ${opts.businessName}. Match the customer's language, use at most two sentences, do not be pushy, do not call tools, do not ask out-of-context questions, and return only the message. Seller instructions: ${opts.instructions || 'Politely check whether the customer still needs help.'}\nHistory:\n${historyText(opts.history)}`,
+        content: `Write one short WhatsApp follow-up for ${opts.businessName}. Match the customer's language and refer to the customer's actual unfinished product question or order from the history. Use at most two sentences, do not be pushy, do not call tools, and do not ask out-of-context questions. Never describe your own feelings or state (happy, glad, fine, working, available) and never write a vague "I am here if you need anything" message. Return only the message. Seller instructions: ${opts.instructions || 'Briefly ask whether the customer still wants help with the exact topic they left unfinished.'}\nHistory:\n${historyText(opts.history)}`,
       },
       { role: 'user', content: 'Write the follow-up now.' },
     ],
@@ -758,7 +966,9 @@ export function fillConfirmationTemplate(
     const value = key === 'customer_phone'
       ? customerPhone
       : key === 'product_name' && Array.isArray(orderData.items)
-        ? orderData.items.map((item: any) => item.product_name).join(', ')
+        ? orderData.items
+            .map((item: any) => `${item.product_name || ''}${item.variant_title ? ` — ${item.variant_title}` : ''}`.trim())
+            .join(', ')
         : orderData[key]
     const escaped = placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     output = output

@@ -1,8 +1,12 @@
 export const dynamic = 'force-dynamic'
 
 import { NextResponse } from 'next/server'
+import { parseAgentConfig, shouldSubmitVariantCarousel } from '@/lib/agentConfig'
+import { submitVariantCarouselTemplates } from '@/lib/carouselTemplates'
 import { prisma } from '@/lib/db'
 import { requireOwner } from '@/lib/fm'
+import { normalizeAppLocale } from '@/lib/language'
+import { publishLeadFlowForAgent } from '@/lib/leadFlowSync'
 import { waStatus } from '@/lib/wa'
 
 async function whatsappReady(token: string) {
@@ -37,7 +41,9 @@ export async function POST(req: Request) {
   const wantsActive = body.policies?.desiredStatus === 'active'
   const enabled = wantsActive && await whatsappReady(owner.token)
 
-  const agent = await prisma.agent.create({
+  const policies = body.policies && typeof body.policies === 'object' ? body.policies : {}
+  const config = parseAgentConfig(policies)
+  const created = await prisma.agent.create({
     data: {
       ownerId: owner.ownerId,
       name,
@@ -48,11 +54,19 @@ export async function POST(req: Request) {
       productName: body.productName || null,
       productImage: body.productImage || null,
       productJson: body.productJson || null,
-      policiesJson: body.policiesJson ? JSON.stringify(body.policiesJson) : JSON.stringify(body.policies || {}),
+      policiesJson: JSON.stringify(policies),
       prompt: prompt.slice(0, 8000),
       enabled,
-      language: typeof body.language === 'string' ? body.language : 'auto',
+      language: normalizeAppLocale(body.language) || 'auto',
     },
   })
-  return NextResponse.json({ agent })
+  const agent = await publishLeadFlowForAgent(owner.token, created)
+  let carousel: { ok: boolean; submitted?: number; error?: string } | null = null
+  if (shouldSubmitVariantCarousel(config)) {
+    carousel = await submitVariantCarouselTemplates(owner.token, {
+      allProducts: config.allProducts,
+      productIds: config.productIds,
+    })
+  }
+  return NextResponse.json({ agent, carousel })
 }

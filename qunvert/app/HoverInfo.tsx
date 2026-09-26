@@ -5,7 +5,7 @@ export default function HoverInfo({ text }: { text: string }) {
     <span className="relative inline-flex group align-middle">
       <button
         type="button"
-        className="grid h-5 w-5 place-items-center rounded-full bg-slate-200 text-[11px] font-black leading-none text-slate-600 transition hover:bg-violet-100 hover:text-violet-700 dark:bg-white/15 dark:text-white/70 dark:hover:bg-violet-500/20 dark:hover:text-violet-200"
+        className="grid h-5 w-5 place-items-center rounded-full bg-slate-200 text-[11px] font-black leading-none text-slate-600 transition hover:bg-primary/15 hover:text-primary dark:bg-white/15 dark:text-white/70 dark:hover:bg-primary/20 dark:hover:text-primary"
         aria-label="More information"
         onClick={(event) => event.preventDefault()}
       >

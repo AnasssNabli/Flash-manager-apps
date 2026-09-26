@@ -102,7 +102,7 @@ export default function MediaLibrary() {
       <button
         type="button"
         onClick={() => setOpen((current) => !current)}
-        className="grid h-9 w-9 place-items-center rounded-xl text-slate-500 transition hover:bg-slate-100 hover:text-violet-600 dark:text-white/45 dark:hover:bg-white/10 dark:hover:text-violet-300"
+        className="grid h-9 w-9 place-items-center rounded-xl text-slate-500 transition hover:bg-slate-100 hover:text-primary dark:text-white/45 dark:hover:bg-white/10 dark:hover:text-primary"
         aria-label="Open media library"
       >
         <Icon icon="solar:paperclip-2-linear" width="20" />
@@ -123,7 +123,7 @@ export default function MediaLibrary() {
             </div>
 
             <div className="grid max-h-[260px] grid-cols-3 gap-2 overflow-y-auto p-1">
-              <button type="button" onClick={() => inputRef.current?.click()} className="grid aspect-square place-items-center rounded-xl border border-dashed border-slate-300 text-slate-500 hover:border-violet-400 hover:bg-violet-50 hover:text-violet-600 dark:border-white/15 dark:text-white/45 dark:hover:bg-violet-500/10" disabled={uploading}>
+              <button type="button" onClick={() => inputRef.current?.click()} className="grid aspect-square place-items-center rounded-xl border border-dashed border-slate-300 text-slate-500 hover:border-primary hover:bg-primary/10 hover:text-primary dark:border-white/15 dark:text-white/45 dark:hover:bg-primary/10" disabled={uploading}>
                 <span className="text-center">
                   <Icon icon={uploading ? 'solar:refresh-circle-linear' : 'solar:add-circle-linear'} width="23" className={`mx-auto ${uploading ? 'animate-spin' : ''}`} />
                   <span className="mt-1 block text-[10px]">{uploading ? 'Uploading' : 'Add'}</span>

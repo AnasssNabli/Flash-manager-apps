@@ -1,7 +1,15 @@
 import type { AgentSettings } from '@prisma/client'
+import { languageName, MIXED_SCRIPT_RULES } from './language'
 import { productContext, type Product } from './products'
+import {
+  compileQuestionnairePrompt,
+  ensureMediaTokens,
+  MAX_INTERVIEW_QUESTIONS,
+  type QuestionnaireAnswer,
+} from './questionnaire'
 
 const MODEL = 'gpt-5.4-mini'
+const SETUP_MODEL = 'gpt-5.6'
 
 function langLine(language: string): string {
   switch (language) {
@@ -36,7 +44,7 @@ export type AgentPolicies = {
   returns?: boolean
 }
 
-async function complete(system: string, user: string, maxTokens = 280): Promise<string> {
+async function complete(system: string, user: string, maxTokens = 280, model = MODEL): Promise<string> {
   const key = process.env.OPENAI_API_KEY
   if (!key) throw new Error('OPENAI_API_KEY is not configured')
 
@@ -47,7 +55,7 @@ async function complete(system: string, user: string, maxTokens = 280): Promise<
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: MODEL,
+      model,
       max_completion_tokens: maxTokens,
       messages: [
         { role: 'system', content: system },
@@ -122,9 +130,9 @@ export async function draftAgentPrompt(opts: {
 
   return complete(
     [
-      'Write a concise WhatsApp sales-agent brief the model will follow when answering customers.',
+      'Write a concise WhatsApp support-agent brief the model will follow when answering customers.',
       'Write in the same language as the seller market (Darija/French/Arabic mix is fine).',
-      'Include: what the agent sells, variants and prices if given, shipping/COD/exchange/returns, and how to close (ask size/city, confirm the order).',
+      'Include: what the store sells, variants and prices if given, and known shipping/COD/exchange/return facts. The agent does not create new orders.',
       'Do not invent discounts or stock. No markdown headings. 8–16 short lines.',
       langLine(opts.language || 'auto'),
     ].join('\n'),
@@ -164,4 +172,159 @@ export async function draftCampaign(opts: {
       .filter(Boolean)
       .join('\n'),
   )
+}
+
+function summarizeAnswers(entries: QuestionnaireAnswer[]): string {
+  return entries
+    .map((entry) => {
+      const media = entry.media.map((file) => `{media:${file.name}}`).join(', ')
+      return [
+        `Q: ${entry.question}`,
+        entry.answer ? `A: ${entry.answer}` : '',
+        media ? `Media: ${media}` : '',
+      ].filter(Boolean).join('\n')
+    })
+    .join('\n\n')
+}
+
+/** Compact product facts the setup model reads before role-playing a customer. */
+export type ProductBrief = {
+  title: string
+  price?: number | string | null
+  currency?: string | null
+  description?: string | null
+  variants?: string[]
+}
+
+export function sanitizeProductBriefs(raw: unknown, max = 40): ProductBrief[] {
+  if (!Array.isArray(raw)) return []
+  return raw
+    .filter((item) => item && typeof item === 'object' && typeof (item as { title?: unknown }).title === 'string')
+    .slice(0, max)
+    .map((item) => {
+      const record = item as Record<string, unknown>
+      return {
+        title: String(record.title).slice(0, 120),
+        price: typeof record.price === 'number' || typeof record.price === 'string' ? record.price : null,
+        currency: typeof record.currency === 'string' ? record.currency.slice(0, 8) : null,
+        description: typeof record.description === 'string' ? record.description.replace(/\s+/g, ' ').slice(0, 400) : null,
+        variants: Array.isArray(record.variants)
+          ? record.variants
+              .map((variant) => typeof variant === 'string'
+                ? variant
+                : variant && typeof variant === 'object' && typeof (variant as { title?: unknown }).title === 'string'
+                  ? String((variant as { title: string; price?: unknown }).title)
+                  : '')
+              .filter(Boolean)
+              .slice(0, 12)
+          : [],
+      }
+    })
+}
+
+function describeProducts(products: ProductBrief[]): string {
+  if (!products.length) return ''
+  return products
+    .map((product) => {
+      const price = product.price != null && product.price !== '' ? ` — ${product.price} ${product.currency || ''}`.trimEnd() : ''
+      const variants = product.variants?.length ? ` | variants: ${product.variants.join(', ')}` : ''
+      const description = product.description ? `\n  ${product.description}` : ''
+      return `- ${product.title}${price}${variants}${description}`
+    })
+    .join('\n')
+}
+
+export async function nextSellerInterviewQuestion(opts: {
+  storeName?: string | null
+  products?: ProductBrief[]
+  language?: string | null
+  common: QuestionnaireAnswer[]
+  interview: QuestionnaireAnswer[]
+}): Promise<{ done: boolean; question: string }> {
+  if (opts.interview.length >= MAX_INTERVIEW_QUESTIONS) {
+    return { done: true, question: '' }
+  }
+
+  const catalog = describeProducts(opts.products || [])
+  const language = languageName(opts.language) || 'the language of the product data'
+  const raw = await complete(
+    [
+      'You help a WhatsApp store seller prepare their AI agent. You role-play as a real customer of this store.',
+      'First read the product list carefully (names, prices, variants, descriptions). Then ask the seller ONE question that a real customer would send on WhatsApp about these exact products or about buying them: sizes, colors, materials, compatibility, how to use, what is included, delivery time and cost to their city, payment (cash on delivery?), exchange or return, warranty, stock, discounts for several items.',
+      'Prefer questions whose answer is NOT already visible in the product data. Mention the product by name when it makes the question concrete.',
+      `Write the question in ${language}, in first person, like a customer. One short sentence, no lists, no preamble.`,
+      opts.interview.length === 0
+        ? 'This is the first question: you may open with a one-word greeting.'
+        : 'This is NOT the first question: do not greet (no "salam", "hi", "bonjour"). Start directly with the question.',
+      MIXED_SCRIPT_RULES,
+      'Never ask something the seller already answered. Cover a different topic each time.',
+      'When the important topics are covered, return done=true.',
+      'Return JSON only: {"done":false,"question":"..."} or {"done":true,"question":""}.',
+    ].join('\n'),
+    [
+      opts.storeName ? `Store: ${opts.storeName}` : '',
+      catalog ? `Products the agent will sell:\n${catalog}` : 'No product data available. Ask general store questions (delivery, payment, returns, hours).',
+      opts.common.length ? `Facts the seller already typed:\n${summarizeAnswers(opts.common)}` : '',
+      `Questions already asked and answered:\n${summarizeAnswers(opts.interview) || '(none yet — start with the most important product question)'}`,
+      `Questions asked so far: ${opts.interview.length}/${MAX_INTERVIEW_QUESTIONS}`,
+    ]
+      .filter(Boolean)
+      .join('\n\n'),
+    220,
+    SETUP_MODEL,
+  )
+
+  let parsed: { done?: boolean; question?: string } = {}
+  try {
+    const match = raw.match(/\{[\s\S]*\}/)
+    parsed = match ? JSON.parse(match[0]) as { done?: boolean; question?: string } : {}
+  } catch {
+    parsed = { question: raw }
+  }
+  const question = String(parsed.question || '').replace(/^["“]|["”]$/g, '').trim()
+  if (parsed.done === true || !question) return { done: true, question: '' }
+  return { done: false, question }
+}
+
+export async function buildSellerAgentPrompt(opts: {
+  tone?: string
+  storeName?: string | null
+  products?: ProductBrief[]
+  language?: string | null
+  entries: QuestionnaireAnswer[]
+}): Promise<string> {
+  const compiled = compileQuestionnairePrompt({
+    tone: opts.tone,
+    storeName: opts.storeName,
+    entries: opts.entries,
+  })
+  const catalog = describeProducts((opts.products || []).slice(0, 16))
+  const polished = await complete(
+    [
+      'Write the seller instructions prompt for a WhatsApp AI agent.',
+      'The agent answers product and after-sales questions and helps customers change the variant on an existing order. It does not create new orders and never pushes a sale.',
+      'For order variant changes, it must send the existing order carousel and update only after the customer clicks a carousel button, never from free text.',
+      'Turn the seller answers below into a clear operating brief the agent can follow.',
+      'If the seller skipped answers, write a safe default brief from the store and catalog only.',
+      'Never invent prices, delivery times, cities, stock, discounts, or policies.',
+      'If a media file is listed, keep that exact {media:filename} token and say when to send it.',
+      'No markdown headings. 12–24 short lines. WhatsApp voice.',
+      languageName(opts.language)
+        ? `Write the brief in ${languageName(opts.language)} so the seller can read and edit it. Keep product names, codes, and {media:...} tokens exactly as given.`
+        : '',
+    ].filter(Boolean).join('\n'),
+    [
+      languageName(opts.language) ? `Store language (open conversations in it): ${languageName(opts.language)}` : '',
+      opts.tone ? `Tone: ${opts.tone}` : '',
+      opts.storeName ? `Store: ${opts.storeName}` : '',
+      catalog ? `Products:\n${catalog}` : '',
+      `Seller questionnaire / facts:\n${compiled}`,
+      `Answered items: ${opts.entries.length}`,
+    ]
+      .filter(Boolean)
+      .join('\n\n'),
+    1400,
+    SETUP_MODEL,
+  )
+  return ensureMediaTokens(polished, compiled)
 }

@@ -1,6 +1,7 @@
 export const dynamic = 'force-dynamic'
 
 import { NextResponse } from 'next/server'
+import { transcribeAudio } from '@/lib/aiRuntime'
 import { gatewayErrorMessage, gw, requireOwner } from '@/lib/fm'
 import { ownerToken } from '@/lib/tenants'
 
@@ -74,7 +75,12 @@ export async function POST(req: Request) {
           method: 'POST',
           body: payload,
         })
-        return NextResponse.json({ file: data.file })
+        let transcript = ''
+        const wantTranscript = new URL(req.url).searchParams.get('transcribe') === '1'
+        if (wantTranscript && kind === 'audio') {
+          transcript = await transcribeAudio(bytes, file.name).catch(() => '')
+        }
+        return NextResponse.json({ file: data.file, transcript })
       } catch (error) {
         lastError = error
       }

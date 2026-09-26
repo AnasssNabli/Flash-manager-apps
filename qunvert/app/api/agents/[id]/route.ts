@@ -1,8 +1,12 @@
 export const dynamic = 'force-dynamic'
 
 import { NextResponse } from 'next/server'
+import { parseAgentConfig, shouldSubmitVariantCarousel } from '@/lib/agentConfig'
+import { submitVariantCarouselTemplates } from '@/lib/carouselTemplates'
 import { prisma } from '@/lib/db'
 import { requireOwner } from '@/lib/fm'
+import { normalizeAppLocale } from '@/lib/language'
+import { publishLeadFlowForAgent } from '@/lib/leadFlowSync'
 import { waStatus } from '@/lib/wa'
 
 async function whatsappReady(token: string) {
@@ -31,6 +35,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   if (typeof body.productName === 'string' || body.productName === null) data.productName = body.productName
   if (typeof body.productImage === 'string' || body.productImage === null) data.productImage = body.productImage
   if (typeof body.productJson === 'string') data.productJson = body.productJson
+  if (normalizeAppLocale(body.language)) data.language = normalizeAppLocale(body.language)
   if (body.policies && typeof body.policies === 'object') {
     data.policiesJson = JSON.stringify(body.policies)
     const policies = body.policies as Record<string, unknown>
@@ -42,8 +47,17 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     }
   }
 
-  const agent = await prisma.agent.update({ where: { id: existing.id }, data })
-  return NextResponse.json({ agent })
+  const updated = await prisma.agent.update({ where: { id: existing.id }, data })
+  const agent = await publishLeadFlowForAgent(owner.token, updated)
+  const config = parseAgentConfig(agent.policiesJson)
+  let carousel: { ok: boolean; submitted?: number; error?: string } | null = null
+  if (shouldSubmitVariantCarousel(config)) {
+    carousel = await submitVariantCarouselTemplates(owner.token, {
+      allProducts: config.allProducts,
+      productIds: config.productIds,
+    })
+  }
+  return NextResponse.json({ agent, carousel })
 }
 
 export async function DELETE(req: Request, { params }: { params: { id: string } }) {

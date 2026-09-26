@@ -76,6 +76,7 @@ model AgentConversation {
   stoppedAt          DateTime?
   orderConfirmedAt   DateTime?
   pendingOrderJson   String?  @db.Text
+  leadFormSentAt     DateTime?
   aiReplyCount       Int      @default(0)
   latestInboundId    String?
   latestInboundAt    DateTime?

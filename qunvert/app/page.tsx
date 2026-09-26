@@ -25,14 +25,6 @@ type Agent = {
   createdAt: string
 }
 
-type Reply = {
-  id: string
-  phone: string
-  inbound: string
-  outbound: string
-  status: string
-}
-
 type ConnectedWhatsApp = {
   connected?: boolean
   isShared?: boolean
@@ -67,10 +59,8 @@ function formatWhatsAppNumber(raw?: string | null) {
   return digits ? `+${digits}` : value
 }
 
-function purposeLabel(config: Partial<AgentConfiguration>) {
-  if (config.purpose === 'support') return 'Customer support'
-  if (config.purpose === 'leads') return 'Generate leads'
-  return config.tag || 'Sales agent'
+function purposeLabel(_config: Partial<AgentConfiguration>) {
+  return 'Customer support & order changes'
 }
 
 function AgentCard({
@@ -101,69 +91,69 @@ function AgentCard({
   const waName = whatsapp.phone?.verifiedName || ''
 
   return (
-    <article className="flex h-full flex-col rounded-2xl border border-slate-200 bg-white p-5 transition-[border-color,box-shadow] duration-200 hover:border-slate-300 hover:shadow-[0_10px_28px_rgba(15,23,42,0.06)] dark:border-white/10 dark:bg-white/[0.04] dark:hover:border-white/20">
-      <div className="flex items-start gap-3">
-        <span className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-[#25D366]/10 text-[#128C7E] dark:bg-[#25D366]/15">
-          <Icon icon="logos:whatsapp-icon" width="22" />
+    <article className="flex h-full flex-col rounded-2xl border border-slate-200 bg-white p-4 transition-[border-color,box-shadow] duration-200 hover:border-slate-300 hover:shadow-[0_10px_28px_rgba(15,23,42,0.06)] dark:border-white/10 dark:bg-white/[0.04] dark:hover:border-white/20">
+      <div className="flex items-start gap-2.5">
+        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-primary/15 text-primary dark:bg-primary/20">
+          <Icon icon="mdi:whatsapp" width="18" />
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <h3 className="truncate text-[15px] font-semibold text-slate-950 dark:text-white">{agent.name}</h3>
-            <span className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${
+            <h3 className="truncate text-sm font-semibold text-slate-950 dark:text-white">{agent.name}</h3>
+            <span className={`inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
               live
-                ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300'
+                ? 'bg-primary/15 text-primary dark:bg-primary/15 dark:text-primary'
                 : 'bg-slate-100 text-slate-500 dark:bg-white/10 dark:text-white/45'
             }`}>
-              <span className={`h-1.5 w-1.5 rounded-full ${live ? 'bg-emerald-500' : 'bg-slate-400'}`} />
+              <span className={`h-1.5 w-1.5 rounded-full ${live ? 'bg-primary' : 'bg-slate-400'}`} />
               {live ? 'Live' : 'Paused'}
             </span>
           </div>
-          <p className="mt-0.5 truncate text-xs text-slate-500 dark:text-white/40">{purposeLabel(config)}</p>
+          <p className="mt-0.5 truncate text-[11px] text-slate-500 dark:text-white/40">{purposeLabel(config)}</p>
         </div>
       </div>
 
-      <div className={`mt-4 flex items-center gap-3 rounded-xl px-3 py-2.5 ${
+      <div className={`mt-3 flex items-center gap-2.5 rounded-xl px-2.5 py-2 ${
         connected
-          ? 'bg-[#25D366]/10 dark:bg-[#25D366]/10'
+          ? 'bg-primary/10 dark:bg-primary/10'
           : 'bg-amber-50 dark:bg-amber-500/10'
       }`}>
-        <span className={`grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-white dark:bg-black/20 ${
-          connected ? 'text-[#128C7E]' : 'text-amber-600'
+        <span className={`grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-white dark:bg-black/20 ${
+          connected ? 'text-primary' : 'text-amber-600'
         }`}>
-          <Icon icon="solar:phone-bold" width="16" />
+          <Icon icon="solar:phone-bold" width="14" />
         </span>
         <div className="min-w-0">
-          <p className={`truncate text-sm font-semibold ${connected ? 'text-slate-900 dark:text-white' : 'text-amber-800 dark:text-amber-200'}`}>
+          <p className={`truncate text-[13px] font-semibold ${connected ? 'text-slate-900 dark:text-white' : 'text-amber-800 dark:text-amber-200'}`}>
             {number || 'No WhatsApp number'}
           </p>
-          <p className="truncate text-xs text-slate-500 dark:text-white/40">
+          <p className="truncate text-[11px] text-slate-500 dark:text-white/40">
             {connected ? (waName || 'Connected number') : 'Connect WhatsApp to go live'}
           </p>
         </div>
       </div>
 
-      <div className="mt-4 flex items-center gap-4 text-xs text-slate-500 dark:text-white/40">
+      <div className="mt-3 flex items-center gap-3 text-[11px] text-slate-500 dark:text-white/40">
         <span className="inline-flex min-w-0 items-center gap-1.5">
-          <Icon icon="solar:box-minimalistic-linear" width="15" className="shrink-0" />
+          <Icon icon="solar:box-minimalistic-linear" width="13" className="shrink-0" />
           <span className="truncate">{allProducts ? 'All products' : `${count || 0} products`}</span>
         </span>
         <span className="h-3 w-px bg-slate-200 dark:bg-white/10" />
         <span className="inline-flex min-w-0 items-center gap-1.5">
-          <Icon icon="solar:shop-linear" width="15" className="shrink-0" />
+          <Icon icon="solar:shop-linear" width="13" className="shrink-0" />
           <span className="truncate">{agent.storeName || 'Main catalog'}</span>
         </span>
       </div>
 
-      <div className="mt-auto flex items-center justify-between gap-3 pt-5">
+      <div className="mt-auto flex items-center justify-between gap-3 pt-4">
         {confirming ? (
           <div className="flex w-full items-center justify-between gap-2">
-            <p className="text-xs font-medium text-rose-600 dark:text-rose-300">Delete this agent?</p>
+            <p className="text-[11px] font-medium text-rose-600 dark:text-rose-300">Delete this agent?</p>
             <div className="flex items-center gap-2">
               <button
                 type="button"
                 onClick={onCancelDelete}
                 disabled={deleting}
-                className="h-10 rounded-xl px-3 text-sm font-medium text-slate-500 hover:bg-slate-100 dark:text-white/50 dark:hover:bg-white/10"
+                className="h-9 rounded-xl px-3 text-[13px] font-medium text-slate-500 hover:bg-slate-100 dark:text-white/50 dark:hover:bg-white/10"
               >
                 Cancel
               </button>
@@ -171,7 +161,7 @@ function AgentCard({
                 type="button"
                 onClick={onConfirmDelete}
                 disabled={deleting}
-                className="inline-flex h-10 items-center gap-1.5 rounded-xl bg-rose-600 px-3 text-sm font-semibold text-white hover:bg-rose-700 disabled:opacity-50"
+                className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-rose-600 px-3 text-[13px] font-semibold text-white hover:bg-rose-700 disabled:opacity-50"
               >
                 {deleting ? 'Deleting…' : 'Delete'}
               </button>
@@ -182,18 +172,18 @@ function AgentCard({
             <button
               type="button"
               onClick={onAskDelete}
-              className="grid h-10 w-10 place-items-center rounded-xl text-slate-400 transition hover:bg-rose-50 hover:text-rose-600 dark:hover:bg-rose-500/10 dark:hover:text-rose-300"
+              className="grid h-9 w-9 place-items-center rounded-xl text-slate-400 transition hover:bg-rose-50 hover:text-rose-600 dark:hover:bg-rose-500/10 dark:hover:text-rose-300"
               aria-label={`Delete ${agent.name}`}
             >
-              <Icon icon="solar:trash-bin-trash-linear" width="18" />
+              <Icon icon="solar:trash-bin-trash-linear" width="16" />
             </button>
             <button
               type="button"
               onClick={onOpen}
-              className="inline-flex h-10 items-center gap-1.5 rounded-xl bg-primary px-4 text-sm font-semibold text-white shadow-[0_8px_18px_rgba(109,94,246,0.28)] transition hover:bg-primary-hover"
+              className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-primary px-3.5 text-[13px] font-semibold text-white shadow-[0_8px_18px_rgba(59,189,181,0.28)] transition hover:bg-primary-hover"
             >
               Manage
-              <Icon icon="solar:arrow-right-linear" width="15" />
+              <Icon icon="solar:arrow-right-linear" width="14" />
             </button>
           </>
         )}
@@ -203,19 +193,17 @@ function AgentCard({
 }
 
 export default function Page() {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const { ready, getFreshToken } = useBridge()
   const embedded = typeof window === 'undefined' || window.self !== window.top
   const [loading, setLoading] = useState(true)
   const [builderOpen, setBuilderOpen] = useState(false)
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null)
   const [agents, setAgents] = useState<Agent[]>([])
-  const [replies, setReplies] = useState<Reply[]>([])
   const [waiting, setWaiting] = useState(0)
   const [whatsapp, setWhatsapp] = useState<ConnectedWhatsApp>({})
   const [stores, setStores] = useState<Store[]>([])
   const [products, setProducts] = useState<Product[]>([])
-  const [waLabels, setWaLabels] = useState<{ id: string; name: string }[]>([])
   const [loadingProducts, setLoadingProducts] = useState(false)
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('')
@@ -246,7 +234,6 @@ export default function Page() {
   const load = useCallback(async () => {
     const data = await api('/api/session', { method: 'POST', body: '{}' })
     setAgents(data.agents || [])
-    setReplies(data.replies || [])
     setWaiting(Number(data.waiting || 0))
     setWhatsapp(data.status || {})
   }, [api])
@@ -263,14 +250,12 @@ export default function Page() {
     setNotice('')
     setLoadingProducts(true)
     try {
-      const [storeData, productData, labelData] = await Promise.all([
+      const [storeData, productData] = await Promise.all([
         api('/api/stores'),
         api('/api/products'),
-        api('/api/whatsapp-labels').catch(() => ({ labels: [] })),
       ])
       setStores(storeData.stores || [])
       setProducts(productData.products || [])
-      setWaLabels(Array.isArray(labelData.labels) ? labelData.labels : [])
     } catch {
       setNotice('We could not load your full catalog. You can close this page and try again.')
     } finally {
@@ -289,6 +274,9 @@ export default function Page() {
       setAgents((current) => [data.agent, ...current])
       setBuilderOpen(false)
       setSelectedAgent(data.agent)
+      if (payload.policies?.submitVariantsForApproval && data.carousel && data.carousel.ok === false) {
+        setNotice('Agent saved. Meta has not accepted the variant carousel template yet — it will be retried on the next save.')
+      }
     } catch {
       setNotice(t('error'))
     } finally {
@@ -311,6 +299,7 @@ export default function Page() {
     })
     setAgents((current) => current.map((item) => item.id === agent.id ? data.agent : item))
     setSelectedAgent(data.agent)
+    return data.agent as Agent
   }
 
   const deleteAgent = async (agent: Agent) => {
@@ -345,7 +334,7 @@ export default function Page() {
     return (
       <div className="min-h-screen grid place-items-center bg-[#f7f7fa] dark:bg-black">
         <div className="flex items-center gap-3 text-sm text-slate-500 dark:text-white/45">
-          <span className="grid h-9 w-9 animate-pulse place-items-center rounded-xl bg-violet-100 text-violet-600 dark:bg-violet-500/20 dark:text-violet-300">
+          <span className="grid h-9 w-9 animate-pulse place-items-center rounded-xl bg-primary/15 text-primary dark:bg-primary/20 dark:text-primary">
             <Icon icon="solar:stars-minimalistic-bold-duotone" width="20" />
           </span>
           {t('connecting')}
@@ -363,7 +352,7 @@ export default function Page() {
           loadingProducts={loadingProducts}
           busy={busy}
           whatsapp={whatsapp}
-          waLabels={waLabels}
+          locale={locale}
           onCancel={() => setBuilderOpen(false)}
           onSave={saveAgent}
         />
@@ -382,6 +371,7 @@ export default function Page() {
         agent={selectedAgent}
         catalogProducts={products}
         whatsapp={whatsapp}
+        locale={locale}
         onBack={() => setSelectedAgent(null)}
         onSave={(payload) => updateAgent(selectedAgent, payload)}
       />
@@ -389,108 +379,81 @@ export default function Page() {
   }
 
   return (
-    <main className="min-h-screen bg-[#f7f7fa] px-4 py-6 sm:px-6 sm:py-9 dark:bg-black">
+    <main className="min-h-screen bg-[#f7f7fa] px-4 py-5 sm:px-6 sm:py-6 dark:bg-black">
       <div className="mx-auto max-w-[1180px]">
-        <header className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
-          <div>
-            <div className="flex items-center gap-2 text-xs font-semibold text-violet-600 dark:text-violet-300">
-              <span className="grid h-6 w-6 place-items-center rounded-lg bg-violet-100 dark:bg-violet-500/20">
-                <Icon icon="solar:stars-minimalistic-bold-duotone" width="15" />
+        <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5 text-[11px] font-semibold text-primary dark:text-primary">
+              <span className="grid h-5 w-5 place-items-center rounded-md bg-primary/15 dark:bg-primary/20">
+                <Icon icon="solar:stars-minimalistic-bold-duotone" width="12" />
               </span>
               Qunvert AI
             </div>
-            <h1 className="mt-3 text-3xl font-semibold tracking-[-0.045em] text-slate-950 sm:text-[38px] dark:text-white">AI agents</h1>
-            <p className="mt-2 max-w-xl text-sm leading-6 text-slate-500 sm:text-base dark:text-white/45">
+            <h1 className="mt-1.5 text-xl font-semibold tracking-[-0.03em] text-slate-950 dark:text-white">AI agents</h1>
+            <p className="mt-1 max-w-xl text-[13px] leading-5 text-slate-500 dark:text-white/45">
               Create focused WhatsApp agents that understand your catalog, capture orders, and hand conversations back to your team.
             </p>
           </div>
           <button
             type="button"
             onClick={openBuilder}
-            className="inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-xl bg-violet-600 px-5 text-sm font-semibold text-white shadow-[0_10px_30px_rgba(109,94,246,0.30)] transition hover:-translate-y-0.5 hover:bg-violet-700"
+            className="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-xl bg-primary px-3.5 text-[13px] font-semibold text-white shadow-[0_10px_30px_rgba(59,189,181,0.30)] transition hover:bg-primary-hover"
           >
-            <Icon icon="solar:add-circle-bold" width="19" />
+            <Icon icon="solar:add-circle-bold" width="16" />
             Create AI agent
           </button>
         </header>
 
-        <section className={`mt-6 rounded-[22px] border p-4 sm:p-5 ${whatsapp.connected && !whatsapp.tokenExpired ? 'border-emerald-200 bg-emerald-50/70 dark:border-emerald-500/20 dark:bg-emerald-500/10' : 'border-amber-200 bg-amber-50/80 dark:border-amber-500/20 dark:bg-amber-500/10'}`}>
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex items-center gap-3">
-              <span className={`grid h-11 w-11 place-items-center rounded-2xl ${whatsapp.connected && !whatsapp.tokenExpired ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-200' : 'bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-200'}`}>
-                <Icon icon="solar:chat-round-dots-bold-duotone" width="22" />
-              </span>
-              <div>
-                <p className="text-sm font-semibold text-slate-950 dark:text-white">
-                  {whatsapp.connected && !whatsapp.tokenExpired
-                    ? whatsapp.phone?.verifiedName || 'WhatsApp Business connected'
-                    : 'WhatsApp is not connected'}
-                </p>
-                <p className="mt-0.5 text-xs text-slate-500 dark:text-white/45">
-                  {whatsapp.connected && !whatsapp.tokenExpired
-                    ? `${whatsapp.phone?.displayPhone || 'Connected number'} · replies run in the background while this number stays connected`
-                    : 'Connect a number in WhatsApp Business before activating an agent. Saved agents stay paused until then.'}
-                </p>
-              </div>
+        <section className="mt-5 grid gap-3 sm:grid-cols-3">
+          <div className="rounded-2xl border border-slate-200/70 bg-white p-3.5 dark:border-white/10 dark:bg-white/[0.04]">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-medium text-slate-500 dark:text-white/40">AI agents</span>
+              <span className="grid h-7 w-7 place-items-center rounded-lg bg-primary/10 text-primary dark:bg-primary/15 dark:text-primary"><Icon icon="solar:stars-minimalistic-bold-duotone" width="14" /></span>
             </div>
-            {whatsapp.isShared && (
-              <span className="rounded-full bg-white px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:bg-white/10 dark:text-white/50">Shared number</span>
-            )}
+            <p className="mt-2 text-xl font-semibold tracking-[-0.03em] text-slate-950 dark:text-white">{agents.length}</p>
+            <p className="mt-0.5 text-[11px] text-slate-400 dark:text-white/30">Configurations saved</p>
+          </div>
+          <div className="rounded-2xl border border-slate-200/70 bg-white p-3.5 dark:border-white/10 dark:bg-white/[0.04]">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-medium text-slate-500 dark:text-white/40">Assigned products</span>
+              <span className="grid h-7 w-7 place-items-center rounded-lg bg-primary/10 text-primary dark:bg-primary/15 dark:text-primary"><Icon icon="solar:box-minimalistic-bold-duotone" width="14" /></span>
+            </div>
+            <p className="mt-2 text-xl font-semibold tracking-[-0.03em] text-slate-950 dark:text-white">{configuredProducts}</p>
+            <p className="mt-0.5 text-[11px] text-slate-400 dark:text-white/30">Across all agents</p>
+          </div>
+          <div className="rounded-2xl border border-slate-200/70 bg-white p-3.5 dark:border-white/10 dark:bg-white/[0.04]">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-medium text-slate-500 dark:text-white/40">Waiting chats</span>
+              <span className="grid h-7 w-7 place-items-center rounded-lg bg-primary/10 text-primary dark:bg-primary/15 dark:text-primary"><Icon icon="solar:chat-round-dots-bold-duotone" width="14" /></span>
+            </div>
+            <p className="mt-2 text-xl font-semibold tracking-[-0.03em] text-slate-950 dark:text-white">{waiting}</p>
+            <p className="mt-0.5 text-[11px] text-slate-400 dark:text-white/30">Ready for the processing phase</p>
           </div>
         </section>
 
-        <section className="mt-8 grid gap-3 sm:grid-cols-3">
-          <div className="rounded-[20px] border border-slate-200/70 bg-white p-4 dark:border-white/10 dark:bg-white/[0.04]">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-slate-500 dark:text-white/40">AI agents</span>
-              <span className="grid h-8 w-8 place-items-center rounded-xl bg-violet-50 text-violet-600 dark:bg-violet-500/15 dark:text-violet-300"><Icon icon="solar:stars-minimalistic-bold-duotone" width="17" /></span>
-            </div>
-            <p className="mt-3 text-2xl font-semibold tracking-[-0.03em] text-slate-950 dark:text-white">{agents.length}</p>
-            <p className="mt-0.5 text-xs text-slate-400 dark:text-white/30">Configurations saved</p>
-          </div>
-          <div className="rounded-[20px] border border-slate-200/70 bg-white p-4 dark:border-white/10 dark:bg-white/[0.04]">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-slate-500 dark:text-white/40">Assigned products</span>
-              <span className="grid h-8 w-8 place-items-center rounded-xl bg-sky-50 text-sky-600 dark:bg-sky-500/15 dark:text-sky-300"><Icon icon="solar:box-minimalistic-bold-duotone" width="17" /></span>
-            </div>
-            <p className="mt-3 text-2xl font-semibold tracking-[-0.03em] text-slate-950 dark:text-white">{configuredProducts}</p>
-            <p className="mt-0.5 text-xs text-slate-400 dark:text-white/30">Across all agents</p>
-          </div>
-          <div className="rounded-[20px] border border-slate-200/70 bg-white p-4 dark:border-white/10 dark:bg-white/[0.04]">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-slate-500 dark:text-white/40">Waiting chats</span>
-              <span className="grid h-8 w-8 place-items-center rounded-xl bg-emerald-50 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-300"><Icon icon="solar:chat-round-dots-bold-duotone" width="17" /></span>
-            </div>
-            <p className="mt-3 text-2xl font-semibold tracking-[-0.03em] text-slate-950 dark:text-white">{waiting}</p>
-            <p className="mt-0.5 text-xs text-slate-400 dark:text-white/30">Ready for the processing phase</p>
-          </div>
-        </section>
-
-        <section className="mt-8">
-          <div className="mb-4 flex items-end justify-between gap-3">
-            <div>
-              <h2 className="text-lg font-semibold tracking-[-0.02em] text-slate-950 dark:text-white">Your agents</h2>
-              <p className="mt-1 text-sm text-slate-500 dark:text-white/40">Each agent has its own products, personality, and safeguards.</p>
-            </div>
+        <section className="mt-6">
+          <div className="mb-3">
+            <h2 className="text-[15px] font-semibold tracking-[-0.02em] text-slate-950 dark:text-white">Your agents</h2>
+            <p className="mt-0.5 text-[12px] text-slate-500 dark:text-white/40">Each agent has its own products, personality, and safeguards.</p>
           </div>
 
           {agents.length === 0 ? (
-            <div className="relative overflow-hidden rounded-[28px] border border-dashed border-violet-200 bg-white px-6 py-16 text-center dark:border-violet-500/25 dark:bg-white/[0.035]">
-              <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_0%,rgba(109,94,246,0.12),transparent_45%)]" />
-              <span className="relative mx-auto grid h-16 w-16 place-items-center rounded-[20px] bg-violet-100 text-violet-600 shadow-[0_12px_30px_rgba(109,94,246,0.18)] dark:bg-violet-500/20 dark:text-violet-200">
-                <Icon icon="solar:stars-minimalistic-bold-duotone" width="32" />
+            <div className="relative overflow-hidden rounded-2xl border border-dashed border-primary/30 bg-white px-5 py-10 text-center dark:border-primary/25 dark:bg-white/[0.035]">
+              <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_0%,rgba(59,189,181,0.18),transparent_45%)]" />
+              <span className="relative mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-primary/15 text-primary dark:bg-primary/20 dark:text-primary">
+                <Icon icon="solar:stars-minimalistic-bold-duotone" width="24" />
               </span>
-              <h3 className="relative mt-5 text-lg font-semibold text-slate-950 dark:text-white">Create your first AI agent</h3>
-              <p className="relative mx-auto mt-2 max-w-md text-sm leading-6 text-slate-500 dark:text-white/45">
+              <h3 className="relative mt-3 text-[15px] font-semibold text-slate-950 dark:text-white">Create your first AI agent</h3>
+              <p className="relative mx-auto mt-1.5 max-w-md text-[13px] leading-5 text-slate-500 dark:text-white/45">
                 Assign products and configure the exact way your agent should respond, follow up, capture orders, and involve your team.
               </p>
-              <button type="button" onClick={openBuilder} className="relative mt-6 inline-flex h-11 items-center gap-2 rounded-xl bg-violet-600 px-5 text-sm font-semibold text-white shadow-[0_10px_28px_rgba(109,94,246,0.28)] hover:bg-violet-700">
-                <Icon icon="solar:add-circle-bold" width="19" />
+              <button type="button" onClick={openBuilder} className="relative mt-4 inline-flex h-9 items-center gap-1.5 rounded-xl bg-primary px-3.5 text-[13px] font-semibold text-white shadow-[0_10px_28px_rgba(59,189,181,0.28)] hover:bg-primary-hover">
+                <Icon icon="solar:add-circle-bold" width="16" />
                 Create AI agent
               </button>
             </div>
           ) : (
-            <div className="grid gap-4 md:grid-cols-2">
+            <div className="grid gap-3 md:grid-cols-2">
               {agents.map((agent) => (
                 <AgentCard
                   key={agent.id}
@@ -507,36 +470,6 @@ export default function Page() {
             </div>
           )}
         </section>
-
-        {replies.length > 0 && (
-          <section className="mt-8 rounded-[24px] border border-slate-200/80 bg-white p-5 dark:border-white/10 dark:bg-white/[0.04]">
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="font-semibold text-slate-950 dark:text-white">Recent activity</h2>
-                <p className="mt-1 text-xs text-slate-500 dark:text-white/40">Messages from the existing responder.</p>
-              </div>
-              <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-500 dark:bg-white/10 dark:text-white/45">{replies.length}</span>
-            </div>
-            <div className="mt-4 divide-y divide-slate-100 dark:divide-white/10">
-              {replies.slice(0, 4).map((reply) => (
-                <div key={reply.id} className="flex gap-3 py-3 first:pt-0 last:pb-0">
-                  <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-emerald-50 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-300">
-                    <Icon icon="solar:chat-round-line-linear" width="18" />
-                  </span>
-                  <div className="min-w-0">
-                    <p className="text-xs font-medium text-slate-700 dark:text-white/70">{reply.phone}</p>
-                    <p className="mt-1 truncate text-xs text-slate-400 dark:text-white/30">{reply.inbound}</p>
-                    {reply.status !== 'sent' && (
-                      <p className="mt-0.5 text-[10px] font-medium uppercase tracking-[0.06em] text-amber-600 dark:text-amber-300">
-                        {reply.status === 'donotanswer' ? 'Not sent · out of context' : reply.status.replace(/_/g, ' ')}
-                      </p>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </section>
-        )}
 
         {notice && <p className="mt-5 text-center text-sm text-rose-500">{notice}</p>}
       </div>

@@ -10,6 +10,19 @@ import { collapseRepeatedPhrases } from './replyQuality'
 import { getThread, inCustomerWindow, lastInbound, messageBody, messageId, messageTime } from './wa'
 
 const MAX_FOLLOWUPS_PER_TICK = 6
+export const FOLLOW_UP_WINDOW_MS = 23 * 60 * 60 * 1000
+const FOLLOW_UP_SEND_BUFFER_MS = 60 * 1000
+
+export function inFollowUpWindow(inboundAt: string | Date | number, now = Date.now()): boolean {
+  const timestamp = new Date(inboundAt).getTime()
+  return Number.isFinite(timestamp) && now - timestamp < FOLLOW_UP_WINDOW_MS
+}
+
+/** Keep one minute for worker/gateway latency while enforcing the 23-hour ceiling. */
+export function clampFollowUpDueAt(requestedAt: Date, sourceInboundAt: Date): Date {
+  const latestSafeSend = sourceInboundAt.getTime() + FOLLOW_UP_WINDOW_MS - FOLLOW_UP_SEND_BUFFER_MS
+  return new Date(Math.min(requestedAt.getTime(), latestSafeSend))
+}
 
 export async function processFollowUps(ownerId: string, token: string): Promise<number> {
   const jobs = await prisma.agentFollowUp.findMany({
@@ -36,7 +49,7 @@ export async function processFollowUps(ownerId: string, token: string): Promise<
       })
       if (!agent) throw new Error('agent_inactive')
       const config = parseAgentConfig(agent.policiesJson)
-      if (config.purpose !== 'leads' || !config.followUp.enabled) throw new Error('followup_disabled')
+      if (!config.followUp.enabled) throw new Error('followup_disabled')
 
       const conversation = await prisma.agentConversation.findUnique({
         where: { agentId_phone: { agentId: agent.id, phone: job.phone } },
@@ -55,8 +68,10 @@ export async function processFollowUps(ownerId: string, token: string): Promise<
       const thread = await getThread(token, job.phone)
       const inbound = lastInbound(thread)
       if (!inbound || messageId(inbound) !== job.sourceInboundId) throw new Error('customer_replied')
-      const inboundAt = new Date(messageTime(inbound) || 0).toISOString()
+      const inboundTime = messageTime(inbound) || 0
+      const inboundAt = new Date(inboundTime).toISOString()
       if (!inCustomerWindow(inboundAt)) throw new Error('outside_customer_window')
+      if (!inFollowUpWindow(inboundTime)) throw new Error('outside_followup_window')
 
       const history: HistoryItem[] = [...thread]
         .sort((a, b) => messageTime(a) - messageTime(b))
@@ -123,6 +138,7 @@ export async function processFollowUps(ownerId: string, token: string): Promise<
         'max_responses',
         'customer_replied',
         'outside_customer_window',
+        'outside_followup_window',
       ].includes(message)
       await prisma.agentFollowUp.update({
         where: { id: job.id },

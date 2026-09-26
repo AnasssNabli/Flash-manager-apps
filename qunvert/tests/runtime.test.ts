@@ -1,6 +1,21 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { comparablePhone, normalizePhone, normalizedStopWord, parseAgentConfig } from '../lib/agentConfig'
+import { comparablePhone, hasAssignedProducts, leadAgentEnabled, normalizePhone, normalizedStopWord, parseAgentConfig, shouldSubmitVariantCarousel } from '../lib/agentConfig'
+import {
+  buildLeadFlowJson,
+  customLeadField,
+  defaultLeadForm,
+  leadCustomFieldLines,
+  leadFlowReady,
+  leadFormHash,
+  leadResponseToOrderData,
+  parseLeadFlowToken,
+  leadFlowToken,
+  parseLeadForm,
+} from '../lib/leadForm'
+import { parseLeadFlowReply } from '../lib/leadFlow'
+import { formatCustomerOrders, orderCustomerFields } from '../lib/aiRuntime'
+import { compileQuestionnairePrompt, ensureMediaTokens, hasCompletedCommonQuestions, isCompleteAnswer, parseQuestionnaire } from '../lib/questionnaire'
 import { CONTEXT_DISCIPLINE, extractTemplateFields, fillConfirmationTemplate, formatProductCatalogue, isContextLengthError, isImageInputError } from '../lib/aiRuntime'
 import { collapseRepeatedPhrases, customerAskedToWait, isDoNotAnswerTool, isSessionWindowError } from '../lib/replyQuality'
 import {
@@ -21,6 +36,14 @@ import { orderFingerprint } from '../lib/orders'
 import { collapseMirroredThread } from '../lib/threadDedupe'
 import { mergeWhatsAppLabels, parseWhatsAppLabels } from '../lib/wa'
 import { audioFileName, isAudioMessage, isVisualMessage, mediaIdOf, messageKindOf, sniffImageMime } from '../lib/inboundMedia'
+import {
+  matchVariantChoice,
+  matchOrderVariantChoice,
+  mergePendingOrderData,
+  parseVariantChoice,
+  variantOrderData,
+} from '../lib/variantCarousel'
+import { clampFollowUpDueAt, inFollowUpWindow } from '../lib/followups'
 
 test('normalizes Moroccan and international phones to the last 9 digits', () => {
   assert.equal(comparablePhone('+212 6 12 34 56 78'), '612345678')
@@ -219,6 +242,163 @@ test('rapid messages wait for a 5s quiet window', () => {
   assert.equal(shouldWaitForRapidBatch(now - 5000, now), false)
 })
 
+test('follow-ups are clamped and rejected at the 23-hour boundary', () => {
+  const inbound = new Date('2026-09-25T00:00:00.000Z')
+  const requested = new Date('2026-09-27T00:00:00.000Z')
+  assert.equal(clampFollowUpDueAt(requested, inbound).toISOString(), '2026-09-25T22:59:00.000Z')
+  assert.equal(inFollowUpWindow(inbound, inbound.getTime() + 22 * 60 * 60 * 1000), true)
+  assert.equal(inFollowUpWindow(inbound, inbound.getTime() + 23 * 60 * 60 * 1000), false)
+})
+
+test('questionnaire prompt keeps audio media tokens for matching customer questions', () => {
+  const prompt = compileQuestionnairePrompt({
+    purpose: 'support',
+    tone: 'friendly',
+    storeName: 'Qunvert',
+    entries: [{
+      id: '1',
+      source: 'interview',
+      question: 'How long does delivery take?',
+      answer: '24 to 48 hours',
+      media: [{ name: 'delivery-time.webm', kind: 'audio' }],
+    }],
+  })
+  assert.match(prompt, /When the customer asks about How long does delivery take\?, send this media file \{media:delivery-time\.webm\}/)
+  assert.match(prompt, /Seller answer: 24 to 48 hours/)
+  const tokens = extractMediaTokens(prompt)
+  assert.deepEqual(tokens.names, ['delivery-time.webm'])
+  const merged = ensureMediaTokens('Answer from the seller facts only.', prompt)
+  assert.match(merged, /\{media:delivery-time\.webm\}/)
+})
+
+test('parseQuestionnaire keeps complete common answers and ignores empty rows', () => {
+  const state = parseQuestionnaire({
+    common: [
+      { question: 'Shipping cost?', answer: '50 MAD', media: [] },
+      { question: '', answer: '', media: [] },
+    ],
+    interview: [{ question: 'Cities?', answer: 'Casa and Rabat', media: [{ name: 'cities.png', kind: 'image' }] }],
+  })
+  assert.equal(hasCompletedCommonQuestions(state), true)
+  assert.equal(state.interview[0]?.media[0]?.name, 'cities.png')
+  assert.equal(isCompleteAnswer(state.common[0]), true)
+})
+
+test('parked lead generation preserves saved form configuration but stays disabled at runtime', () => {
+  const legacyLeads = parseAgentConfig({ purpose: 'leads' })
+  assert.equal(legacyLeads.leadForm.enabled, true)
+  assert.equal(leadAgentEnabled(legacyLeads), false)
+  assert.deepEqual(legacyLeads.leadForm.fields.map((field) => field.key), ['customer_name', 'customer_address', 'customer_city'])
+  const legacySupport = parseAgentConfig({ purpose: 'support' })
+  assert.equal(leadAgentEnabled(legacySupport), false)
+  const explicit = parseAgentConfig({ purpose: 'leads', leadForm: { enabled: false, fields: [] } })
+  assert.equal(leadAgentEnabled(explicit), false)
+})
+
+test('lead form parsing dedupes fields, keeps order, and slugs custom labels', () => {
+  const form = parseLeadForm({
+    enabled: true,
+    cta: 'Order now please and thanks',
+    fields: [
+      { key: 'customer_city' },
+      { key: 'customer_city' },
+      { label: 'Shoe size' },
+      { key: 'customer_name', required: false },
+    ],
+  })
+  assert.deepEqual(form.fields.map((field) => field.key), ['customer_city', 'customer_shoe_size', 'customer_name'])
+  assert.equal(form.fields[1].builtin, false)
+  assert.equal(form.fields[1].label, 'Shoe size')
+  assert.equal(form.fields[2].required, false)
+  assert.equal(form.cta.length <= 20, true)
+  assert.equal(customLeadField('City')?.builtin, true)
+  assert.equal(customLeadField('   '), null)
+})
+
+test('flow json mirrors the form fields and completes with every value', () => {
+  const form = { ...defaultLeadForm(true), fields: [...defaultLeadForm(true).fields, customLeadField('Size')!] }
+  const flow = buildLeadFlowJson(form)
+  const screen = flow.screens[0]
+  assert.equal(screen.id, 'ORDER')
+  assert.equal(screen.terminal, true)
+  const children = (screen.layout.children[0] as { children: Record<string, unknown>[] }).children
+  const inputs = children.filter((child) => child.type === 'TextInput' || child.type === 'TextArea')
+  assert.deepEqual(inputs.map((child) => child.name), ['customer_name', 'customer_address', 'customer_city', 'customer_size'])
+  assert.equal(inputs[1].type, 'TextArea')
+  const footer = children.find((child) => child.type === 'Footer') as { 'on-click-action': { name: string; payload: Record<string, string> } }
+  assert.equal(footer['on-click-action'].name, 'complete')
+  assert.equal(footer['on-click-action'].payload.customer_size, '${form.customer_size}')
+  assert.equal((footer as unknown as { label: string }).label, form.cta)
+})
+
+test('flow readiness requires a published flow that matches the current fields', () => {
+  const form = defaultLeadForm(true)
+  assert.equal(leadFlowReady(form), false)
+  const published = { ...form, flowId: '123', flowStatus: 'published' as const, flowHash: leadFormHash(form) }
+  assert.equal(leadFlowReady(published), true)
+  const edited = { ...published, fields: [...published.fields, customLeadField('Color')!] }
+  assert.equal(leadFlowReady(edited), false)
+  assert.equal(leadFlowReady({ ...published, enabled: false }), false)
+})
+
+test('flow submissions are detected from nfm_reply metadata and mapped to order data', () => {
+  const form = { ...defaultLeadForm(true), fields: [...defaultLeadForm(true).fields, customLeadField('Size')!] }
+  const token = leadFlowToken('agent_1', '+212 600-000000')
+  assert.deepEqual(parseLeadFlowToken(token), { agentId: 'agent_1', phone: '+212600000000' })
+  const reply = parseLeadFlowReply({
+    type: 'interactive',
+    body: null,
+    metadata: {
+      interactive: {
+        type: 'nfm_reply',
+        nfm_reply: {
+          response_json: JSON.stringify({ flow_token: token, customer_name: 'Kais', customer_city: 'Casablanca', customer_address: '12 Atlas', customer_size: '42' }),
+        },
+      },
+    },
+  })
+  assert.ok(reply)
+  assert.equal(reply?.agentId, 'agent_1')
+  const data = leadResponseToOrderData(form, reply!.values)
+  assert.equal(data.customer_city, 'Casablanca')
+  assert.deepEqual(leadCustomFieldLines(form, data), ['Size: 42'])
+  // A plain text message that happens to be JSON is not a flow submission.
+  assert.equal(parseLeadFlowReply({ type: 'text', body: '{"customer_name":"x"}', metadata: {} }), null)
+})
+
+test('parked lead generation does not expose form fields to the runtime', () => {
+  const config = parseAgentConfig({
+    leadForm: { enabled: true, fields: [{ key: 'customer_name' }, { key: 'customer_province' }, { label: 'Size', required: true }] },
+    confirmationTemplate: 'Name: {Full Name} City: {City}',
+  })
+  assert.deepEqual(orderCustomerFields(config).map((field) => field.key), ['customer_name', 'customer_city'])
+  const templateOnly = parseAgentConfig({ confirmationTemplate: 'Name: {Full Name} City: {City} Phone: {Phone}' })
+  assert.deepEqual(orderCustomerFields(templateOnly).map((field) => field.key), ['customer_name', 'customer_city'])
+  assert.equal(fillConfirmationTemplate('Province: {Province}', { customer_province: 'Casablanca-Settat' }, '+212600000000'), 'Province: Casablanca-Settat')
+})
+
+test('customer order context identifies existing orders, items, and carousel availability', () => {
+  const text = formatCustomerOrders([{
+    id: 'order_1',
+    name: 'FM1001',
+    source: 'shopify',
+    createdAt: '2026-09-25T10:00:00.000Z',
+    total: 189,
+    currency: 'MAD',
+    confirmation: 'confirmed',
+    fulfillment: null,
+    financial: 'pending',
+    archived: false,
+    items: [{ title: 'NG-52', qty: 1, price: 189, variant: 'Blue', sku: 'BLUE-M' }],
+    variants: { productTitle: 'NG-52', cardCount: 3 },
+  }])
+  assert.match(text, /EXISTING ORDERS/)
+  assert.match(text, /FM1001/)
+  assert.match(text, /Blue/)
+  assert.match(text, /variant carousel ready/)
+  assert.equal(formatCustomerOrders([]), 'EXISTING ORDERS: none found for this WhatsApp number.')
+})
+
 test('media tokens are stripped and collected without duplicating names', () => {
   const parsed = extractMediaTokens('Hello {media:catalog.png} {media:catalog.png}\n{product_media:x}')
   assert.equal(parsed.cleanText, 'Hello')
@@ -277,6 +457,78 @@ test('parseAgentConfig fills follow-up defaults as off / 3 hours', () => {
   assert.equal(config.maxResponses, 60)
 })
 
+test('variant carousel is off when no products are assigned', () => {
+  assert.equal(hasAssignedProducts({ allProducts: true, productIds: [] }), true)
+  assert.equal(hasAssignedProducts({ allProducts: false, productIds: ['p1'] }), true)
+  assert.equal(hasAssignedProducts({ allProducts: false, productIds: [] }), false)
+  assert.equal(shouldSubmitVariantCarousel(parseAgentConfig({
+    allProducts: false,
+    productIds: [],
+    submitVariantsForApproval: true,
+  })), false)
+  assert.equal(shouldSubmitVariantCarousel(parseAgentConfig({
+    allProducts: true,
+    productIds: [],
+    submitVariantsForApproval: true,
+  })), true)
+})
+
+test('carousel choices resolve to exact catalogue variants and survive AI order merges', () => {
+  assert.equal(parseVariantChoice({ type: 'text', body: 'I want the red color', metadata: {} }), null)
+  const choice = parseVariantChoice({
+    type: 'interactive',
+    metadata: {
+      button_payload: 'fmcar:product_1:1:Large',
+      choice_label: 'Large',
+    },
+  })
+  assert.deepEqual(choice, { label: 'Large', index: 1, contextKey: 'product_1' })
+  const products = [{
+    id: 'product_1',
+    title: 'Classic shirt',
+    price: 180,
+    currency: 'MAD',
+    description: null,
+    image_url: null,
+    variants: [
+      { id: 'small', title: 'Small', sku: 'SH-S', price: 180 },
+      { id: 'large', title: 'Large', sku: 'SH-L', price: 195 },
+    ],
+  }]
+  const matched = matchVariantChoice(products, choice!)
+  assert.equal(matched?.variantId, 'large')
+  assert.equal(matched?.price, '195')
+  const selected = variantOrderData(matched!)
+  const merged = mergePendingOrderData(selected, {
+    items: [{ product_name: 'Classic shirt', quantity: 2, price: '180' }],
+    customer_name: 'Sara',
+  })
+  assert.equal(merged.items?.[0].variant_title, 'Large')
+  assert.equal(merged.items?.[0].sku, 'SH-L')
+  assert.equal(merged.items?.[0].price, '195')
+  assert.equal(merged.items?.[0].quantity, 2)
+  assert.equal(merged.customer_name, 'Sara')
+  assert.equal(
+    fillConfirmationTemplate('Item: {Product Name}', merged, '0612345678'),
+    'Item: Classic shirt — Large',
+  )
+  const orderMatched = matchOrderVariantChoice(products, {
+    id: 'order_1',
+    name: 'FM1001',
+    source: 'shopify',
+    createdAt: '2026-09-25T10:00:00.000Z',
+    total: 195,
+    currency: 'MAD',
+    confirmation: 'confirmed',
+    fulfillment: null,
+    financial: 'pending',
+    archived: false,
+    items: [{ title: 'Classic shirt', qty: 1, price: 180, variant: 'Small' }],
+    variants: { productTitle: 'Classic shirt', cardCount: 2 },
+  }, choice!)
+  assert.equal(orderMatched?.variantTitle, 'Large')
+})
+
 test('parseAgentConfig clamps max AI replies per chat to 60', () => {
   assert.equal(parseAgentConfig({ maxResponses: 12 }).maxResponses, 12)
   assert.equal(parseAgentConfig({ maxResponses: 0 }).maxResponses, 60)
@@ -293,7 +545,8 @@ test('parseAgentConfig accepts a live object draft', () => {
   const config = parseAgentConfig({ instructions: 'Sell gently', resumeAfterMinutes: 8 })
   assert.equal(config.instructions, 'Sell gently')
   assert.equal(config.resumeAfterMinutes, 8)
-  assert.equal(config.purpose, 'leads')
+  // Single agent type: ordering is off until the seller enables the lead agent.
+  assert.equal(leadAgentEnabled(config), false)
 })
 
 test('WhatsApp label payloads normalize to unique named options', () => {

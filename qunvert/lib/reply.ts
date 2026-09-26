@@ -1,6 +1,8 @@
 import type { Agent } from '@prisma/client'
-import { executeAgentAction } from './actions'
-import { blockedPhone, parseAgentConfig, type AgentConfiguration } from './agentConfig'
+import { confirmAgentOrder, executeAgentAction } from './actions'
+import { blockedPhone, leadAgentEnabled, parseAgentConfig, type AgentConfiguration } from './agentConfig'
+import { leadResponseToOrderData } from './leadForm'
+import { parseLeadFlowReply, type LeadFlowReply } from './leadFlow'
 import {
   humanTookOver,
   isOlderHumanConversation,
@@ -23,7 +25,14 @@ import { prisma } from './db'
 import { creditBalance } from './fm'
 import { applyConversationLabel } from './labels'
 import { sendOutputWithMedia } from './media'
-import { listBuyers, phoneKey } from './orders'
+import {
+  listBuyers,
+  listCustomerOrders,
+  phoneKey,
+  updateExistingOrderVariant,
+  type AgentOrderData,
+} from './orders'
+import { clampFollowUpDueAt } from './followups'
 import {
   finishOutbound,
   isKnownAgentOutbound,
@@ -50,8 +59,17 @@ import {
   messageBody,
   messageId,
   messageTime,
+  sendText,
   type ThreadMessage,
 } from './wa'
+import {
+  matchVariantChoice,
+  matchOrderVariantChoice,
+  mergePendingOrderData,
+  parseVariantChoice,
+  variantOrderData,
+  type MatchedVariant,
+} from './variantCarousel'
 
 const MAX_PER_TICK = 8
 const RAPID_WINDOW_MS = 5_000
@@ -116,6 +134,80 @@ function rapidInboundText(thread: ThreadMessage[], latest: ThreadMessage) {
     .join('\n')
 }
 
+/**
+ * Customer submitted the WhatsApp order form: merge the answers with the items
+ * the AI stored when it sent the form, create the FlashManager order, and send
+ * the confirmation message. No AI call, no credits.
+ */
+async function handleLeadFormReply(opts: {
+  ownerId: string
+  token: string
+  agent: Agent
+  config: AgentConfiguration
+  phone: string
+  inboundId: string
+  claimId: string
+  reply: LeadFlowReply
+}): Promise<void> {
+  const conversation = await prisma.agentConversation.findUnique({
+    where: { agentId_phone: { agentId: opts.agent.id, phone: opts.phone } },
+    select: { id: true, pendingOrderJson: true },
+  }).catch(() => null)
+  let pending: AgentOrderData = {}
+  try {
+    pending = conversation?.pendingOrderJson ? JSON.parse(conversation.pendingOrderJson) : {}
+  } catch {
+    pending = {}
+  }
+  const data: AgentOrderData = {
+    ...pending,
+    ...leadResponseToOrderData(opts.config.leadForm, opts.reply.values),
+  }
+  const result = await confirmAgentOrder({
+    ownerId: opts.ownerId,
+    token: opts.token,
+    agent: opts.agent,
+    config: opts.config,
+    phone: opts.phone,
+    data,
+    channel: 'whatsapp_flow',
+  })
+  const output = collapseRepeatedPhrases(result.reply)
+  if (!output.trim()) throw new Error('empty_confirmation')
+  const ledger = await planOutbound({
+    ownerId: opts.ownerId,
+    agentId: opts.agent.id,
+    phone: opts.phone,
+    kind: 'text',
+    body: output,
+    source: 'reply',
+  })
+  const sent = await sendText(opts.token, opts.phone, output)
+  await finishOutbound(ledger.id, sent)
+  if (!sent.ok) throw new Error(sent.error || 'confirmation_send_failed')
+  await prisma.$transaction([
+    ...(conversation?.id ? [prisma.agentConversation.update({
+      where: { id: conversation.id },
+      data: { aiReplyCount: { increment: 1 } },
+    })] : []),
+    prisma.replyLog.create({
+      data: {
+        ownerId: opts.ownerId,
+        phone: opts.phone,
+        inboundId: opts.inboundId,
+        inbound: `[order form] ${JSON.stringify(opts.reply.values)}`.slice(0, 2000),
+        outbound: output.slice(0, 2000),
+        credits: 0,
+        status: 'sent',
+      },
+    }),
+    prisma.agentInboundClaim.update({
+      where: { id: opts.claimId },
+      data: { status: 'completed', completedAt: new Date() },
+    }),
+  ])
+}
+
 async function finishClaim(id: string, status: string, error?: string) {
   await prisma.agentInboundClaim.update({
     where: { id },
@@ -157,11 +249,10 @@ async function recordSkip(opts: {
 }
 
 async function selectedProducts(token: string, agent: Agent, config: AgentConfiguration) {
-  if (!config.allProducts) {
-    const saved = parseProducts(agent)
-    if (saved.length) return saved
+  if (config.allProducts) {
+    return listProducts(token, '', 100, agent.storeDomain || '')
   }
-  return listProducts(token, '', 100, agent.storeDomain || '')
+  return parseProducts(agent)
 }
 
 async function recentOrderExists(ownerId: string, agentId: string, phone: string) {
@@ -226,13 +317,17 @@ async function scheduleFollowUp(opts: {
   config: AgentConfiguration
   phone: string
   inboundId: string
+  sourceInboundAt: Date
 }) {
-  if (opts.config.purpose !== 'leads' || !opts.config.followUp.enabled) return
+  if (!opts.config.followUp.enabled) return
   const delayMs = (
     Math.max(0, opts.config.followUp.hours) * 60 +
     Math.max(0, opts.config.followUp.minutes)
   ) * 60 * 1000
-  const dueAt = new Date(Date.now() + delayMs)
+  const dueAt = clampFollowUpDueAt(
+    new Date(Date.now() + delayMs),
+    opts.sourceInboundAt,
+  )
   await prisma.$transaction([
     prisma.agentFollowUp.updateMany({
       where: {
@@ -342,7 +437,10 @@ export async function processOwnerReplies(ownerId: string, token: string): Promi
       ? new Date(messageTime(inbound)).toISOString()
       : convo.lastInboundAt
     const initialText = messageBody(inbound) || convo.lastMessage || ''
-    const agent = pickAgent(agents, initialText)
+    const flowReply = parseLeadFlowReply(inbound)
+    const variantChoice = parseVariantChoice(inbound)
+    const flowAgent = flowReply?.agentId ? agents.find((candidate) => candidate.id === flowReply.agentId) : null
+    const agent = flowAgent || pickAgent(agents, initialText)
     const config = parseAgentConfig(agent.policiesJson)
     if (config.desiredStatus !== 'active') continue
 
@@ -355,6 +453,13 @@ export async function processOwnerReplies(ownerId: string, token: string): Promi
       select: { id: true },
     })
     if (alreadyLogged) continue
+    // Skipped inbounds (human mode, audio disabled, …) keep the conversation in needs_reply
+    // with no reply log; the claim row is what remembers we already looked at them.
+    const alreadyClaimed = await prisma.agentInboundClaim.findUnique({
+      where: { ownerId_inboundId: { ownerId, inboundId } },
+      select: { id: true },
+    })
+    if (alreadyClaimed) continue
     if (!inCustomerWindow(inboundAt)) {
       await recordSkip({
         ownerId,
@@ -384,6 +489,20 @@ export async function processOwnerReplies(ownerId: string, token: string): Promi
 
       if (blockedPhone(config, convo.phone)) {
         await skipClaim(claim.id, 'blocked_phone')
+        continue
+      }
+      if (flowReply && leadAgentEnabled(config)) {
+        await handleLeadFormReply({
+          ownerId,
+          token,
+          agent,
+          config,
+          phone: convo.phone,
+          inboundId,
+          claimId: claim.id,
+          reply: flowReply,
+        })
+        sentConversations += 1
         continue
       }
       if (!config.answerAfterOrder && await hasAnyOrder(ownerId, agent.id, convo.phone, token)) {
@@ -476,6 +595,7 @@ export async function processOwnerReplies(ownerId: string, token: string): Promi
           stoppedAt: null,
           orderConfirmedAt: null,
           pendingOrderJson: null,
+          leadFormSentAt: null,
           aiReplyCount: 0,
           latestInboundId: inboundId,
           latestInboundAt: new Date(),
@@ -560,7 +680,86 @@ export async function processOwnerReplies(ownerId: string, token: string): Promi
       }
 
       const history = threadHistory(thread)
-      const products = await selectedProducts(token, agent, config)
+      const [products, existingOrders] = await Promise.all([
+        selectedProducts(token, agent, config),
+        listCustomerOrders(token, convo.phone),
+      ])
+      let selectedVariant: MatchedVariant | null = null
+      let orderEditResult: {
+        orderId: string
+        orderName: string
+        status: 'updated' | 'failed'
+        shopifyUpdated?: boolean
+        error?: string
+      } | null = null
+      if (variantChoice) {
+        let existing: AgentOrderData = {}
+        try {
+          existing = conversation.pendingOrderJson ? JSON.parse(conversation.pendingOrderJson) : {}
+        } catch {
+          existing = {}
+        }
+        const orderCarouselState = existing._order_variant_carousel && typeof existing._order_variant_carousel === 'object'
+          ? existing._order_variant_carousel as Record<string, unknown>
+          : {}
+        const referencedOrder = existingOrders.find((order) =>
+          order.id === variantChoice.contextKey || order.name === variantChoice.contextKey,
+        ) || existingOrders.find((order) => order.id === String(orderCarouselState.orderId || ''))
+
+        if (referencedOrder) {
+          selectedVariant = matchOrderVariantChoice(products, referencedOrder, variantChoice)
+        }
+        if (referencedOrder && selectedVariant) {
+          const update = await updateExistingOrderVariant(token, {
+            order: referencedOrder,
+            variant: selectedVariant,
+          })
+          orderEditResult = {
+            orderId: referencedOrder.id,
+            orderName: referencedOrder.name,
+            status: update.ok ? 'updated' : 'failed',
+            shopifyUpdated: update.shopifyUpdated,
+            error: update.error,
+          }
+          existing._order_edit = {
+            orderId: referencedOrder.id,
+            orderName: referencedOrder.name,
+            productId: selectedVariant.productId,
+            productName: selectedVariant.productName,
+            variantId: selectedVariant.variantId,
+            variantTitle: selectedVariant.variantTitle,
+            sku: selectedVariant.sku,
+            status: orderEditResult.status,
+            updatedAt: Date.now(),
+          }
+          delete existing._order_variant_carousel
+          const merged = mergePendingOrderData(existing, variantOrderData(selectedVariant))
+          conversation = conversation.id
+            ? await prisma.agentConversation.update({
+                where: { id: conversation.id },
+                data: { pendingOrderJson: JSON.stringify(merged) },
+              }).catch(() => ({ ...conversation, pendingOrderJson: JSON.stringify(merged) }))
+            : await prisma.agentConversation.upsert({
+                where: { agentId_phone: { agentId: agent.id, phone: convo.phone } },
+                create: {
+                  ownerId,
+                  agentId: agent.id,
+                  phone: convo.phone,
+                  pendingOrderJson: JSON.stringify(merged),
+                },
+                update: { pendingOrderJson: JSON.stringify(merged) },
+              })
+        } else if (leadAgentEnabled(config)) {
+          const carouselState = existing._variant_carousel && typeof existing._variant_carousel === 'object'
+            ? existing._variant_carousel as Record<string, unknown>
+            : {}
+          const sentProductId = String(carouselState.productId || '').trim()
+          selectedVariant = matchVariantChoice(products, {
+            ...variantChoice,
+            contextKey: sentProductId || variantChoice.contextKey,
+          })
+        }
+      }
       const content = await buildInboundContent(token, config, inbound, thread, ownerId)
       if (content.skipReason) {
         await skipClaim(claim.id, content.skipReason)
@@ -581,7 +780,8 @@ export async function processOwnerReplies(ownerId: string, token: string): Promi
       let output = ''
       let charged = 0
       let handedOffToHuman = false
-      if (isFirstCustomerMessage && config.autoReplyOpener.trim()) {
+      const useFirstMessageOpener = isFirstCustomerMessage && existingOrders.length === 0
+      if (useFirstMessageOpener && config.autoReplyOpener.trim()) {
         output = config.autoReplyOpener.trim()
       } else {
         if (conversation.id) {
@@ -605,9 +805,13 @@ export async function processOwnerReplies(ownerId: string, token: string): Promi
           history,
           latestMessage: content.text,
           customerPhone: convo.phone,
-          isFirstCustomerMessage,
+          isFirstCustomerMessage: useFirstMessageOpener,
           recentOrderWithin10Min: await recentOrderExists(ownerId, agent.id, convo.phone),
           images: content.images,
+          defaultLanguage: agent.language,
+          selectedVariant,
+          existingOrders,
+          orderEditResult,
         })
         let action = generation.action
         const candidateText = String(action?.arguments.response || generation.reply || '')
@@ -628,6 +832,8 @@ export async function processOwnerReplies(ownerId: string, token: string): Promi
           phone: convo.phone,
           action,
           fallbackReply: generation.reply,
+          products,
+          existingOrders,
         })
         if (actionResult.skipSend) {
           await recordSkip({
@@ -718,7 +924,14 @@ export async function processOwnerReplies(ownerId: string, token: string): Promi
         })
       }
       if (!handedOffToHuman) {
-        await scheduleFollowUp({ ownerId, agent, config, phone: convo.phone, inboundId })
+        await scheduleFollowUp({
+          ownerId,
+          agent,
+          config,
+          phone: convo.phone,
+          inboundId,
+          sourceInboundAt: new Date(messageTime(inbound) || Date.now()),
+        })
       }
       void applyCustomLabels(
         ownerId,

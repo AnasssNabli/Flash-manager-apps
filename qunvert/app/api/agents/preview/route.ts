@@ -29,9 +29,12 @@ export async function POST(req: Request) {
     products = body.products
   } else {
     try {
-      products = !config.allProducts && agent.productJson
-        ? JSON.parse(agent.productJson)
-        : await listProducts(owner.token, '', 100, agent.storeDomain || '')
+      products = config.allProducts
+        ? await listProducts(owner.token, '', 100, agent.storeDomain || '')
+        : agent.productJson
+          ? JSON.parse(agent.productJson)
+          : []
+      if (!Array.isArray(products)) products = []
     } catch {
       products = []
     }
@@ -63,6 +66,7 @@ export async function POST(req: Request) {
     customerPhone: '0612345678',
     isFirstCustomerMessage: isFirstCustomerMessage && !openerAlreadyUsed,
     recentOrderWithin10Min: false,
+    defaultLanguage: agent.language,
   })
   if (isDoNotAnswerTool(result.action?.name)) {
     return NextResponse.json({

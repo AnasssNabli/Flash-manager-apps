@@ -5,12 +5,11 @@ import { Icon } from '@iconify/react'
 import useSWR from 'swr'
 import useSWRInfinite from 'swr/infinite'
 import { apiFetch, mediaUrl } from '@/lib/waApi'
-import { mediaIdOf, messageKindOf, previewLabelForMessage } from '@/lib/waMedia'
-import { collapseMirroredThread } from '@/lib/threadDedupe'
-import { isOptimisticId, newOptimisticId, takeServerMatch } from '@/lib/optimisticSend'
 import { daysUntilSunset, sunsetDateLabel } from '@/lib/sunset'
 import { hasActionableHealth, openItemCount, type WhatsAppHealth } from '@/lib/health'
 import { useWhatsAppCall } from '@/lib/useWhatsAppCall'
+import { useI18n } from '@/lib/useI18n'
+import { localeTag } from '@/lib/fmLocale'
 
 /**
  * The seller's WhatsApp inbox.
@@ -183,24 +182,25 @@ interface ContactOrdersResult {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function fmtTime(iso: string) {
+function fmtTime(iso: string, locale: string, yesterdayAt: string) {
   const d = new Date(iso)
   const now = new Date()
+  const tag = localeTag(locale)
   const isToday = d.toDateString() === now.toDateString()
   const yesterday = new Date(now)
   yesterday.setDate(now.getDate() - 1)
   const isYesterday = d.toDateString() === yesterday.toDateString()
   const isThisYear = d.getFullYear() === now.getFullYear()
-  const hhmm = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+  const hhmm = d.toLocaleTimeString(tag, { hour: '2-digit', minute: '2-digit' })
 
   if (isToday) return hhmm
-  if (isYesterday) return `Yesterday ${hhmm}`
-  if (isThisYear) return `${d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} ${hhmm}`
-  return `${d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: '2-digit' })} ${hhmm}`
+  if (isYesterday) return yesterdayAt.replace('{time}', hhmm)
+  if (isThisYear) return `${d.toLocaleDateString(tag, { day: 'numeric', month: 'short' })} ${hhmm}`
+  return `${d.toLocaleDateString(tag, { day: 'numeric', month: 'short', year: '2-digit' })} ${hhmm}`
 }
 
-function fmtTimeFull(iso: string | Date) {
-  return new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+function fmtTimeFull(iso: string | Date, locale = 'en') {
+  return new Date(iso).toLocaleTimeString(localeTag(locale), { hour: '2-digit', minute: '2-digit' })
 }
 
 /**
@@ -250,21 +250,42 @@ function deliveryFailure(msg: WaMessage): string | null {
   return failureTextForCode(err?.code, err?.title)
 }
 
-function groupByDate(messages: WaMessage[]) {
+function digitsOnly(phone: string | null | undefined): string {
+  return String(phone || '').replace(/\D/g, '')
+}
+
+/** Super Admin: the owner wrote this if `from` is their number, not ours. */
+function fromMatchesContact(from: string | null | undefined, contact: string | null | undefined): boolean {
+  const a = digitsOnly(from)
+  const b = digitsOnly(contact)
+  if (!a || !b) return false
+  if (a === b) return true
+  const short = a.length <= b.length ? a : b
+  const long = a.length <= b.length ? b : a
+  return short.length >= 9 && long.endsWith(short)
+}
+
+function bubbleIsOut(msg: WaMessage, contactPhone: string | null, platformInbox: boolean): boolean {
+  if (platformInbox) return !fromMatchesContact(msg.from_phone, contactPhone)
+  return msg.direction === 'outbound'
+}
+
+function groupByDate(messages: WaMessage[], locale: string, today: string, yesterdayLabel: string) {
   const groups: { label: string; messages: WaMessage[] }[] = []
   let currentLabel = ''
+  const tag = localeTag(locale)
 
   for (const msg of messages) {
     const d = new Date(msg.timestamp)
     const now = new Date()
     let label: string
-    if (d.toDateString() === now.toDateString()) label = 'Today'
+    if (d.toDateString() === now.toDateString()) label = today
     else {
       const yesterday = new Date(now)
       yesterday.setDate(now.getDate() - 1)
       label = d.toDateString() === yesterday.toDateString()
-        ? 'Yesterday'
-        : d.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })
+        ? yesterdayLabel
+        : d.toLocaleDateString(tag, { weekday: 'long', day: 'numeric', month: 'long' })
     }
     if (label !== currentLabel) {
       groups.push({ label, messages: [] })
@@ -274,37 +295,6 @@ function groupByDate(messages: WaMessage[]) {
   }
 
   return groups
-}
-
-function bumpConversationPages(
-  pages: ConversationPage[] | undefined,
-  phone: string,
-  preview: string,
-  contactName?: string | null,
-): ConversationPage[] | undefined {
-  if (!pages?.length) return pages
-  let found: Conversation | undefined
-  const stripped = pages.map(page => ({
-    ...page,
-    conversations: page.conversations.filter(c => {
-      if (c.phone !== phone) return true
-      found = c
-      return false
-    }),
-  }))
-  const updated: Conversation = found
-    ? { ...found, lastMessage: preview, lastTimestamp: new Date().toISOString(), direction: 'outbound', unread: 0 }
-    : {
-        phone,
-        contactName: contactName ?? null,
-        lastMessage: preview,
-        lastTimestamp: new Date().toISOString(),
-        unread: 0,
-        direction: 'outbound',
-      }
-  return stripped.map((page, index) => (
-    index === 0 ? { ...page, conversations: [updated, ...page.conversations] } : page
-  ))
 }
 
 function fmtDuration(s: number) {
@@ -335,7 +325,14 @@ function saveIdSet(key: string, ids: Set<string>) {
 
 function messagePlainText(msg: WaMessage): string {
   if (msg.template_preview?.body) return msg.template_preview.body
-  return previewLabelForMessage(msg)
+  if (msg.body && !/^🎠\s*Carousel\s*\(/i.test(msg.body)) return msg.body
+  if (msg.type === 'image') return '📷 Photo'
+  if (msg.type === 'video') return '🎥 Video'
+  if (msg.type === 'audio') return '🎙️ Voice message'
+  if (msg.type === 'document') return '📄 Document'
+  if (msg.type === 'sticker') return '🎨 Sticker'
+  if (msg.type === 'location') return '📍 Location'
+  return msg.body || ''
 }
 
 const EMOJI_GROUPS: { label: string; emojis: string[] }[] = [
@@ -356,9 +353,6 @@ const EMOJI_GROUPS: { label: string; emojis: string[] }[] = [
 function StatusTick({ status }: { status: string | null }) {
   if (status === 'failed') {
     return <Icon icon="solar:danger-triangle-bold" className="text-[13px] text-red-500" />
-  }
-  if (status === 'pending' || status === 'sending') {
-    return <Icon icon="solar:clock-circle-linear" className="text-[13px] text-[#667781] dark:text-[#8fb7ad]" />
   }
   if (!status || status === 'sent') {
     return <Icon icon="solar:check-bold" className="text-[12px] text-[#8c8c8c]" />
@@ -487,170 +481,6 @@ function ReplyQuote({
   )
 }
 
-function UnavailableMedia({
-  kind,
-}: {
-  kind: 'image' | 'video' | 'audio' | 'document' | 'sticker' | 'media'
-}) {
-  const label =
-    kind === 'video' ? 'Video' :
-    kind === 'audio' ? 'Voice message' :
-    kind === 'document' ? 'Document' :
-    kind === 'sticker' ? 'Sticker' :
-    kind === 'image' ? 'Photo' :
-    'Media'
-  const icon =
-    kind === 'video' ? 'solar:videocamera-record-bold' :
-    kind === 'audio' ? 'solar:microphone-3-bold' :
-    kind === 'document' ? 'solar:document-bold' :
-    'solar:gallery-bold'
-  return (
-    <div className="flex min-w-[220px] items-center gap-3 px-3 py-3">
-      <span className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-black/8 dark:bg-white/10">
-        <Icon icon={icon} className="text-[22px] text-[#54656f] dark:text-[#aeaeae]" />
-      </span>
-      <div className="min-w-0">
-        <p className="text-[13px] font-semibold text-[#111111] dark:text-[#e9edef]">{label}</p>
-        <p className="mt-0.5 text-[11px] leading-4 text-[#667781] dark:text-[#8c8c8c]">
-          Sent from the phone — WhatsApp didn’t include this file in the inbox
-        </p>
-      </div>
-    </div>
-  )
-}
-
-function RemoteImage({
-  src,
-  alt,
-  onOpen,
-  contain,
-}: {
-  src: string
-  alt: string
-  onOpen: () => void
-  contain?: boolean
-}) {
-  const [failed, setFailed] = useState(false)
-  if (failed) return <UnavailableMedia kind="image" />
-  return (
-    // eslint-disable-next-line @next/next/no-img-element
-    <img
-      src={src}
-      alt={alt}
-      className={`max-h-[280px] w-full max-w-full cursor-pointer transition-opacity active:opacity-80 ${contain ? 'object-contain bg-black/5 dark:bg-white/5' : 'object-cover'}`}
-      loading="lazy"
-      onError={() => setFailed(true)}
-      onClick={onOpen}
-    />
-  )
-}
-
-function mediaCaption(msg: WaMessage): string | null {
-  const caption = String(msg.body || '').trim()
-  if (!caption) return null
-  if (/^(📷 Photo|🎥 Video|🎙️ Voice message|📄 Document|🎨 Sticker|📍 Location|📷 Media)$/i.test(caption)) return null
-  return caption
-}
-
-function ThreadMessageBody({
-  msg,
-  isOut,
-  srcFor,
-  onOpenImage,
-  suppressClickRef,
-}: {
-  msg: WaMessage
-  isOut: boolean
-  srcFor: (id: string) => string
-  onOpenImage: (src: string) => void
-  suppressClickRef: { current: boolean }
-}) {
-  const kind = messageKindOf(msg)
-  const mediaId = mediaIdOf(msg)
-  const src = mediaId ? srcFor(mediaId) : ''
-  const caption = mediaCaption(msg)
-  const open = () => {
-    if (suppressClickRef.current) {
-      suppressClickRef.current = false
-      return
-    }
-    if (src) onOpenImage(src)
-  }
-
-  if (msg.template_preview && kind === 'text') {
-    return <TemplateBubble preview={msg.template_preview} />
-  }
-  if (kind === 'image' && src) {
-    return (
-      <div>
-        <RemoteImage src={src} alt="Photo" onOpen={open} />
-        {caption && <p className="px-3 pt-1.5 pb-0 whitespace-pre-wrap break-words">{renderWaText(caption)}</p>}
-      </div>
-    )
-  }
-  if (kind === 'sticker' && src) {
-    return <RemoteImage src={src} alt="Sticker" onOpen={open} contain />
-  }
-  if (kind === 'video' && src) {
-    return (
-      <div>
-        <div className="relative flex min-h-[160px] items-center justify-center rounded-t-lg bg-black">
-          <video src={src} controls preload="metadata" className="max-h-[280px] w-full max-w-full" playsInline />
-        </div>
-        {caption && <p className="px-3 pt-1.5 pb-0 whitespace-pre-wrap break-words">{renderWaText(caption)}</p>}
-      </div>
-    )
-  }
-  if (kind === 'audio' && src) {
-    return (
-      <AudioPlayer
-        src={src}
-        isOut={isOut}
-        storedDuration={msg.metadata?.voice_duration ?? undefined}
-        timestamp={msg.timestamp}
-        status={msg.status}
-      />
-    )
-  }
-  if (kind === 'document' && src) {
-    return (
-      <a
-        href={src}
-        target="_blank"
-        rel="noreferrer"
-        className="flex items-center gap-3 px-3 py-3 text-[#111111] dark:text-[#e9edef]"
-      >
-        <span className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-black/8 dark:bg-white/10">
-          <Icon icon="solar:document-bold" className="text-[22px] text-[#54656f] dark:text-[#aeaeae]" />
-        </span>
-        <span className="min-w-0">
-          <span className="block truncate text-[13px] font-semibold">{caption || 'Document'}</span>
-          <span className="mt-0.5 block text-[11px] text-[#667781] dark:text-[#8c8c8c]">Open file</span>
-        </span>
-      </a>
-    )
-  }
-  if (kind === 'placeholder' || ((kind === 'image' || kind === 'video' || kind === 'audio' || kind === 'document' || kind === 'sticker') && !src)) {
-    return <UnavailableMedia kind={kind === 'placeholder' ? 'media' : kind} />
-  }
-  if (kind === 'unsupported') {
-    return <UnavailableMedia kind="media" />
-  }
-  if (msg.template_preview) {
-    return <TemplateBubble preview={msg.template_preview} />
-  }
-  if (caption) {
-    return <p className="px-3 pt-2 pb-0 whitespace-pre-wrap break-words">{renderWaText(caption)}</p>
-  }
-  if (kind === 'location') {
-    return <p className="px-3 pt-2 pb-0">📍 Location</p>
-  }
-  if (kind === 'edit' && msg.body) {
-    return <p className="px-3 pt-2 pb-0 whitespace-pre-wrap break-words">{renderWaText(msg.body)}</p>
-  }
-  return <UnavailableMedia kind="media" />
-}
-
 function carouselBodyOf(msg: WaMessage): string {
   const previewBody = msg.template_preview?.body
   if (previewBody && !/^🎠\s*Carousel\s*\(/i.test(previewBody)) return previewBody
@@ -659,7 +489,7 @@ function carouselBodyOf(msg: WaMessage): string {
 }
 
 function convoPreviewText(raw: string | null): string {
-  if (!raw) return '📷 Media'
+  if (!raw) return '📎 Attachment'
   const dumped = raw.match(/^🎠\s*Carousel\s*\(\d+\)\s*:\s*(.+)$/i)
   if (dumped) return `🎠 ${dumped[1].replace(/\s*-\s*/g, ' · ')}`
   return raw
@@ -1161,13 +991,10 @@ function MessageActionSheet({
   const [moreEmoji, setMoreEmoji] = useState(false)
   const isOut = msg.direction === 'outbound'
   const preview = messagePlainText(msg)
-  const pending = isOptimisticId(msg.id) || msg.status === 'pending'
 
   const actions: { key: string; label: string; icon: string; danger?: boolean; onClick: () => void }[] = [
-    ...(!pending ? [
-      { key: 'reply', label: 'Reply', icon: 'solar:reply-bold', onClick: onReply },
-      { key: 'forward', label: 'Forward', icon: 'solar:forward-2-bold', onClick: onForward },
-    ] : []),
+    { key: 'reply', label: 'Reply', icon: 'solar:reply-bold', onClick: onReply },
+    { key: 'forward', label: 'Forward', icon: 'solar:forward-2-bold', onClick: onForward },
     { key: 'copy', label: 'Copy', icon: 'solar:copy-bold', onClick: onCopy },
     { key: 'star', label: starred ? 'Unstar' : 'Star', icon: starred ? 'solar:star-bold' : 'solar:star-line-duotone', onClick: onStar },
     { key: 'delete', label: 'Delete', icon: 'solar:trash-bin-trash-bold', danger: true, onClick: onDelete },
@@ -1183,7 +1010,6 @@ function MessageActionSheet({
         className="w-full max-w-[300px] flex flex-col items-stretch gap-2.5"
         onClick={e => e.stopPropagation()}
       >
-        {!pending && (
         <div className="self-center flex items-center gap-0.5 pl-1.5 pr-1 py-1 rounded-full bg-white/95 dark:bg-[#2a2a2a] shadow-[0_8px_28px_rgba(0,0,0,0.28)]">
           {QUICK_REACTIONS.map(emoji => (
             <button
@@ -1205,9 +1031,8 @@ function MessageActionSheet({
             <Icon icon="ic:round-add" className="text-[20px]" />
           </button>
         </div>
-        )}
 
-        {!pending && moreEmoji && (
+        {moreEmoji && (
           <div className="max-h-[180px] overflow-y-auto rounded-2xl bg-white dark:bg-[#1e1e1e] shadow-lg p-2">
             {EMOJI_GROUPS.map(group => (
               <div key={group.label}>
@@ -1238,7 +1063,7 @@ function MessageActionSheet({
               : 'bg-white dark:bg-[#202020] text-[#111111] dark:text-[#e9edef]'
           }`}
         >
-          <p className="line-clamp-4 whitespace-pre-wrap break-words">{preview || '📷 Media'}</p>
+          <p className="line-clamp-4 whitespace-pre-wrap break-words">{preview || '📎 Attachment'}</p>
         </div>
 
         <div className="rounded-[18px] overflow-hidden bg-[#f2f2f7]/95 dark:bg-[#2a2a2a] shadow-[0_12px_32px_rgba(0,0,0,0.28)]">
@@ -1332,7 +1157,7 @@ function ForwardPicker({
 
 // ─── Empty state ──────────────────────────────────────────────────────────────
 
-function EmptyState() {
+function EmptyState({ title, hint }: { title: string; hint: string }) {
   return (
     <div className="flex-1 flex flex-col items-center justify-center bg-[#f0f2f5] dark:bg-[#1a1a1a] select-none">
       <div className="flex flex-col items-center gap-4 opacity-70">
@@ -1340,9 +1165,9 @@ function EmptyState() {
           <Icon icon="logos:whatsapp-icon" className="text-5xl" />
         </div>
         <div className="text-center">
-          <h2 className="text-[22px] font-light text-[#41525d] dark:text-[#aeaeae] mb-1">WhatsApp Inbox</h2>
+          <h2 className="text-[22px] font-light text-[#41525d] dark:text-[#aeaeae] mb-1">{title}</h2>
           <p className="text-[14px] text-[#667781] dark:text-[#8c8c8c] max-w-xs">
-            Select a conversation from the left to start chatting with your customers.
+            {hint}
           </p>
         </div>
       </div>
@@ -1882,6 +1707,7 @@ export default function Inbox({
   platformInbox = false,
   addToast,
 }: InboxProps) {
+  const { t, locale } = useI18n()
   const [activePhone, setActivePhone] = useState<string | null>(null)
   useEffect(() => {
     const raw = new URLSearchParams(window.location.search).get('phone') || ''
@@ -1892,14 +1718,7 @@ export default function Inbox({
   const [convoFilter, setConvoFilter] = useState<ConvoFilter>('all')
   const [connFilters, setConnFilters] = useState<Set<ConnFilter>>(new Set())
   const [messageText, setMessageText] = useState('')
-  const [pendingSends, setPendingSends] = useState<Array<{
-    id: string
-    phone: string
-    message: WaMessage
-    localUrl?: string
-  }>>([])
-  const pendingSendsRef = useRef(pendingSends)
-  pendingSendsRef.current = pendingSends
+  const [sending, setSending] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const [composerFocusTick, setComposerFocusTick] = useState(0)
@@ -1923,9 +1742,9 @@ export default function Inbox({
   const [mediaFile, setMediaFile] = useState<File | null>(null)
   const [mediaPreviewUrl, setMediaPreviewUrl] = useState<string | null>(null)
   const [mediaCaption, setMediaCaption] = useState('')
+  const [mediaUploading, setMediaUploading] = useState(false)
   const captionRef = useRef<HTMLTextAreaElement>(null)
   const sendingMediaRef = useRef(false)
-  const sendingVoiceRef = useRef(false)
   const sendMediaRef = useRef<() => Promise<void>>(async () => {})
   const cancelMediaRef = useRef<() => void>(() => {})
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -1980,13 +1799,6 @@ export default function Inbox({
     }
     return out
   })()
-  const labelPhones = conversations.map(c => c.phone).slice(0, 100).join(',')
-  const { data: agentLabelData } = useSWR<{ labelsByPhone?: Record<string, string[]> }>(
-    labelPhones ? `/wa/agent-labels?phones=${encodeURIComponent(labelPhones)}` : null,
-    fetcher,
-    { refreshInterval: 10_000, revalidateOnFocus: false }
-  )
-  const agentLabels = agentLabelData?.labelsByPhone ?? {}
 
   // Counts come from the server's full unfiltered list so the badges stay
   // accurate no matter which tab is active.
@@ -2052,40 +1864,10 @@ export default function Inbox({
   }, [convoPages, maybeLoadMoreConversations])
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [threadData?.messages?.length, pendingSends.length, activePhone])
-
-  useEffect(() => {
-    const server = threadData?.messages
-    if (!server?.length) return
-    setPendingSends(prev => {
-      if (!prev.length) return prev
-      const claimed = new Set<string>()
-      const kept: typeof prev = []
-      let changed = false
-      for (const item of prev) {
-        if (item.phone !== activePhone) {
-          kept.push(item)
-          continue
-        }
-        const matchId = takeServerMatch(item.message, server, claimed)
-        if (matchId) {
-          claimed.add(matchId)
-          if (item.localUrl) URL.revokeObjectURL(item.localUrl)
-          changed = true
-          continue
-        }
-        kept.push(item)
-      }
-      return changed ? kept : prev
-    })
-  }, [threadData?.messages, activePhone])
-
-  useEffect(() => () => {
-    for (const item of pendingSendsRef.current) {
-      if (item.localUrl) URL.revokeObjectURL(item.localUrl)
+    if (threadData?.messages?.length) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
     }
-  }, [])
+  }, [threadData?.messages?.length])
 
   // Scroll to the chat panel when a conversation opens (mobile CSS scroll-snap)
   useEffect(() => {
@@ -2155,30 +1937,30 @@ export default function Inbox({
 
   const activeConvo = conversations.find(c => c.phone === activePhone)
   const totalUnread = conversations.reduce((s, c) => s + c.unread, 0)
-  const pendingForChat = (() => {
-    const server = threadData?.messages ?? []
-    const claimed = new Set<string>()
-    return pendingSends
-      .filter(item => {
-        if (item.phone !== activePhone) return false
-        if (!server.length) return true
-        const matchId = takeServerMatch(item.message, server, claimed)
-        if (matchId) {
-          claimed.add(matchId)
-          return false
-        }
-        return true
-      })
-      .map(item => item.message)
+  const visibleMessages = (() => {
+    const raw = (threadData?.messages ?? []).filter(m => !hiddenIds.has(m.id))
+    if (!platformInbox || !activePhone) return raw
+    const seen = new Set<string>()
+    const out: WaMessage[] = []
+    for (const m of raw) {
+      const aligned: WaMessage = {
+        ...m,
+        direction: fromMatchesContact(m.from_phone, activePhone) ? 'inbound' : 'outbound',
+      }
+      const bucket = Math.floor(new Date(aligned.timestamp).getTime() / 2000)
+      const isMedia = ['image', 'video', 'audio', 'document', 'sticker'].includes(aligned.type)
+      const key = isMedia
+        ? `${aligned.type}|${bucket}`
+        : `text|${(aligned.body || '').trim().slice(0, 80)}|${bucket}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push(aligned)
+    }
+    return out
   })()
-  const visibleMessages = collapseMirroredThread(
-    [
-      ...(threadData?.messages ?? []).filter(m => !hiddenIds.has(m.id)),
-      ...pendingForChat.filter(m => !hiddenIds.has(m.id)),
-    ],
-    [connectedPhone],
-  )
-  const groups = visibleMessages.length ? groupByDate(visibleMessages) : []
+  const groups = visibleMessages.length
+    ? groupByDate(visibleMessages, locale, t('today'), t('yesterday'))
+    : []
   const messagesByWamid = (() => {
     const map = new Map<string, WaMessage>()
     for (const m of visibleMessages) {
@@ -2216,19 +1998,6 @@ export default function Inbox({
     onPointerUp: clearPress,
     onPointerCancel: clearPress,
   })
-
-  const markPendingStatus = (id: string, status: string) => {
-    setPendingSends(prev => prev.map(item => (
-      item.id === id ? { ...item, message: { ...item.message, status } } : item
-    )))
-  }
-
-  const bumpChat = (phone: string, preview: string) => {
-    mutateConvos(
-      pages => bumpConversationPages(pages, phone, preview, conversations.find(c => c.phone === phone)?.contactName),
-      { revalidate: false },
-    )
-  }
 
   const sendReaction = async (msg: WaMessage, emoji: string) => {
     setActionMsg(null)
@@ -2322,28 +2091,6 @@ export default function Inbox({
       addToast('error', 'Nothing to forward')
       return
     }
-    const pendingId = newOptimisticId()
-    if (phone === activePhone) {
-      setPendingSends(prev => [...prev, {
-        id: pendingId,
-        phone,
-        message: {
-          id: pendingId,
-          wa_message_id: pendingId,
-          direction: 'outbound',
-          from_phone: connectedPhone || '',
-          to_phone: phone,
-          body: text,
-          type: 'text',
-          status: 'pending',
-          timestamp: new Date().toISOString(),
-          read: true,
-          metadata: {},
-          media_url: null,
-        },
-      }])
-    }
-    bumpChat(phone, text)
     try {
       const res = await apiFetch('/wa/send', {
         method: 'POST',
@@ -2352,12 +2099,10 @@ export default function Inbox({
       })
       const d = await res.json().catch(() => ({}))
       if (!res.ok || !d.success) throw new Error(d.error || 'Failed to forward')
-      if (phone === activePhone) markPendingStatus(pendingId, 'sent')
       addToast('success', 'Forwarded')
       if (phone === activePhone) mutateThread()
       mutateConvos()
     } catch (e: any) {
-      if (phone === activePhone) markPendingStatus(pendingId, 'failed')
       addToast('error', e.message)
     }
   }
@@ -2374,61 +2119,34 @@ export default function Inbox({
     !sharedNumber &&
     (health?.canPlaceCalls === true || call.inCall || call.state === 'waiting_permission')
 
-  const handleSend = () => {
+  const handleSend = async () => {
     if (!messageText.trim() || !activePhone) return
     const text = messageText.trim()
-    const quoted = replyTo
-    const phone = activePhone
     setMessageText('')
-    setReplyTo(null)
-    if (inputRef.current) {
-      inputRef.current.style.height = 'auto'
-      inputRef.current.focus()
+    setSending(true)
+    try {
+      const res = await apiFetch('/wa/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          to: activePhone,
+          type: 'text',
+          text,
+          ...(replyTo?.wa_message_id ? { replyTo: replyTo.wa_message_id } : {}),
+        }),
+      })
+      const d = await res.json().catch(() => ({}))
+      if (!res.ok || !d.success) throw new Error(d.error || 'Failed to send')
+      setReplyTo(null)
+      mutateThread()
+      mutateConvos()
+    } catch (e: any) {
+      addToast('error', e.message)
+      setMessageText(text)
+    } finally {
+      setSending(false)
+      inputRef.current?.focus()
     }
-
-    const pendingId = newOptimisticId()
-    setPendingSends(prev => [...prev, {
-      id: pendingId,
-      phone,
-      message: {
-        id: pendingId,
-        wa_message_id: pendingId,
-        direction: 'outbound',
-        from_phone: connectedPhone || '',
-        to_phone: phone,
-        body: text,
-        type: 'text',
-        status: 'pending',
-        timestamp: new Date().toISOString(),
-        read: true,
-        metadata: quoted?.wa_message_id ? { reply_to: quoted.wa_message_id } : {},
-        media_url: null,
-      },
-    }])
-    bumpChat(phone, text)
-
-    void (async () => {
-      try {
-        const res = await apiFetch('/wa/send', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            to: phone,
-            type: 'text',
-            text,
-            ...(quoted?.wa_message_id ? { replyTo: quoted.wa_message_id } : {}),
-          }),
-        })
-        const d = await res.json().catch(() => ({}))
-        if (!res.ok || !d.success) throw new Error(d.error || 'Failed to send')
-        markPendingStatus(pendingId, 'sent')
-        mutateThread()
-        mutateConvos()
-      } catch (e: any) {
-        markPendingStatus(pendingId, 'failed')
-        addToast('error', e.message)
-      }
-    })()
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -2483,7 +2201,7 @@ export default function Inbox({
       setRecordingTime(0)
       recordingTimerRef.current = setInterval(() => setRecordingTime(t => t + 1), 1000)
     } catch {
-      addToast('error', 'Microphone access denied')
+      addToast('error', t('micDenied'))
     }
   }
 
@@ -2501,43 +2219,11 @@ export default function Inbox({
   }
 
   const sendVoice = async () => {
-    if (!audioBlob || !activePhone || sendingVoiceRef.current) return
-    sendingVoiceRef.current = true
-    const blob = audioBlob
-    const duration = recordingTime
-    const localUrl = audioPreviewUrl
-    const phone = activePhone
-    setAudioBlob(null)
-    setAudioPreviewUrl(null)
-    setRecordingTime(0)
-    sendingVoiceRef.current = false
-
-    const pendingId = newOptimisticId()
-    setPendingSends(prev => [...prev, {
-      id: pendingId,
-      phone,
-      message: {
-        id: pendingId,
-        wa_message_id: pendingId,
-        direction: 'outbound',
-        from_phone: connectedPhone || '',
-        to_phone: phone,
-        body: null,
-        type: 'audio',
-        status: 'pending',
-        timestamp: new Date().toISOString(),
-        read: true,
-        metadata: { voice_duration: duration },
-        media_url: localUrl,
-      },
-      localUrl: localUrl || undefined,
-    }])
-    bumpChat(phone, '🎙️ Voice message')
-
+    if (!audioBlob || !activePhone) return
+    setSending(true)
     try {
-      const normalizedBlob = new Blob([await blob.arrayBuffer()], { type: 'audio/ogg' })
       const form = new FormData()
-      form.append('file', normalizedBlob, 'voice.ogg')
+      form.append('file', audioBlob, audioBlob.type.includes('ogg') ? 'voice.ogg' : 'voice.webm')
       form.append('mediaType', 'audio')
 
       const uploadRes = await apiFetch('/wa/media/upload', { method: 'POST', body: form })
@@ -2547,17 +2233,18 @@ export default function Inbox({
       const sendRes = await apiFetch('/wa/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ to: phone, type: 'audio', mediaId: uploadData.mediaId, duration }),
+        body: JSON.stringify({ to: activePhone, type: 'audio', mediaId: uploadData.mediaId, duration: recordingTime }),
       })
       const sendData = await sendRes.json().catch(() => ({}))
       if (!sendRes.ok || !sendData.success) throw new Error(sendData.error || 'Send failed')
 
-      markPendingStatus(pendingId, 'sent')
+      cancelVoice()
       mutateThread()
       mutateConvos()
     } catch (e: any) {
-      markPendingStatus(pendingId, 'failed')
       addToast('error', e.message)
+    } finally {
+      setSending(false)
     }
   }
 
@@ -2569,13 +2256,13 @@ export default function Inbox({
     const isImage = file.type.startsWith('image/')
     const isVideo = file.type.startsWith('video/')
     if (!isImage && !isVideo) {
-      addToast('error', 'Only images and videos are supported')
+      addToast('error', t('onlyImagesVideos'))
       return
     }
 
     const maxMB = isVideo ? 16 : 5
     if (file.size > maxMB * 1024 * 1024) {
-      addToast('error', `File too large. Max ${maxMB}MB for ${isVideo ? 'videos' : 'images'}.`)
+      addToast('error', t('fileTooLarge', { max: maxMB, kind: t(isVideo ? 'videos' : 'images') }))
       return
     }
 
@@ -2594,7 +2281,7 @@ export default function Inbox({
         const file = item.getAsFile()
         if (!file) return
         if (file.size > 5 * 1024 * 1024) {
-          addToast('error', 'File too large. Max 5MB for images.')
+          addToast('error', t('fileTooLarge', { max: 5, kind: t('images') }))
           return
         }
         setMediaFile(file)
@@ -2615,41 +2302,12 @@ export default function Inbox({
   const sendMedia = async () => {
     if (!mediaFile || !activePhone || sendingMediaRef.current) return
     sendingMediaRef.current = true
-    const file = mediaFile
-    const previewUrl = mediaPreviewUrl
-    const caption = mediaCaption.trim()
-    const phone = activePhone
-    const mediaType = file.type.startsWith('video/') ? 'video' : 'image'
-    setMediaFile(null)
-    setMediaPreviewUrl(null)
-    setMediaCaption('')
-    sendingMediaRef.current = false
-
-    const pendingId = newOptimisticId()
-    setPendingSends(prev => [...prev, {
-      id: pendingId,
-      phone,
-      message: {
-        id: pendingId,
-        wa_message_id: pendingId,
-        direction: 'outbound',
-        from_phone: connectedPhone || '',
-        to_phone: phone,
-        body: caption || null,
-        type: mediaType,
-        status: 'pending',
-        timestamp: new Date().toISOString(),
-        read: true,
-        metadata: {},
-        media_url: previewUrl,
-      },
-      localUrl: previewUrl || undefined,
-    }])
-    bumpChat(phone, caption || (mediaType === 'video' ? '🎥 Video' : '📷 Photo'))
-
+    setMediaUploading(true)
     try {
+      const mediaType = mediaFile.type.startsWith('video/') ? 'video' : 'image'
+
       const form = new FormData()
-      form.append('file', file)
+      form.append('file', mediaFile)
       form.append('mediaType', mediaType)
 
       const uploadRes = await apiFetch('/wa/media/upload', { method: 'POST', body: form })
@@ -2660,21 +2318,23 @@ export default function Inbox({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          to: phone,
+          to: activePhone,
           type: mediaType,
           mediaId: uploadData.mediaId,
-          ...(caption ? { caption } : {}),
+          ...(mediaCaption.trim() ? { caption: mediaCaption.trim() } : {}),
         }),
       })
       const sendData = await sendRes.json().catch(() => ({}))
       if (!sendRes.ok || !sendData.success) throw new Error(sendData.error || 'Send failed')
 
-      markPendingStatus(pendingId, 'sent')
+      cancelMedia()
       mutateThread()
       mutateConvos()
     } catch (e: any) {
-      markPendingStatus(pendingId, 'failed')
       addToast('error', e.message)
+    } finally {
+      sendingMediaRef.current = false
+      setMediaUploading(false)
     }
   }
   sendMediaRef.current = sendMedia
@@ -2824,7 +2484,7 @@ export default function Inbox({
                             : 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400'
                       }`}
                     >
-                      {platformInbox ? 'Platform' : sharedNumber ? 'Shared' : 'Own'}
+                      {platformInbox ? t('platform') : sharedNumber ? t('shared') : t('own')}
                     </span>
                   </div>
                 )}
@@ -2841,12 +2501,12 @@ export default function Inbox({
                 <button
                   onClick={onOpenSettings}
                   className="w-9 h-9 rounded-full bg-white dark:bg-[#2a2a2a] shadow-md border border-gray-100 dark:border-[#333333] flex items-center justify-center hover:scale-105 active:scale-95 transition-all text-gray-800 dark:text-white"
-                  aria-label="WhatsApp sender settings"
+                  aria-label={t('senderSettings')}
                 >
                   <Icon icon="solar:settings-bold-duotone" className="text-[18px]" />
                 </button>
                 <div className="absolute right-full mr-2 top-1/2 -translate-y-1/2 px-2 py-1 bg-gray-800 dark:bg-gray-700 text-white text-[11px] rounded whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-150 shadow-lg">
-                  Sender settings
+                  {t('senderSettings')}
                   <div className="absolute left-full top-1/2 -translate-y-1/2 border-4 border-transparent border-l-gray-800 dark:border-l-gray-700" />
                 </div>
               </div>
@@ -2931,7 +2591,7 @@ export default function Inbox({
               <input
                 value={search}
                 onChange={e => setSearch(e.target.value)}
-                placeholder="Search or start new chat"
+                placeholder={t('searchPlaceholder')}
                 className="flex-1 bg-transparent text-[14px] text-[#1c1c1c] dark:text-[#e9edef] placeholder:text-[#667781] dark:placeholder:text-[#8c8c8c] outline-none"
               />
               {search && (
@@ -2946,10 +2606,10 @@ export default function Inbox({
               blasts would otherwise bury them */}
           <div className="px-2 pb-2 bg-white dark:bg-[#111111] flex items-center gap-1 overflow-x-auto">
             {([
-              { id: 'all',         label: 'All',         count: convoCounts.all },
-              { id: 'needs_reply', label: 'Needs reply', count: convoCounts.needsReply },
-              { id: 'unread',      label: 'Unread',      count: convoCounts.unread },
-              { id: 'sent',        label: 'Sent',        count: convoCounts.sent },
+              { id: 'all',         label: t('filterAll'),         count: convoCounts.all },
+              { id: 'needs_reply', label: t('filterNeedsReply'), count: convoCounts.needsReply },
+              { id: 'unread',      label: t('filterUnread'),      count: convoCounts.unread },
+              { id: 'sent',        label: t('filterSent'),        count: convoCounts.sent },
             ] as Array<{ id: ConvoFilter; label: string; count: number }>).map(tab => {
               const active = convoFilter === tab.id
               return (
@@ -3041,14 +2701,14 @@ export default function Inbox({
                 <Icon icon="solar:chat-dots-bold-duotone" className="text-4xl text-gray-300 dark:text-[#2a2a2a]" />
                 <p className="text-[13px] text-[#667781] dark:text-[#8c8c8c]">
                   {search
-                    ? 'No conversations match your search'
+                    ? t('emptySearch')
                     : convoFilter === 'unread'
-                      ? "No unread messages — you're all caught up"
+                      ? t('emptyUnread')
                       : convoFilter === 'needs_reply'
-                        ? 'No customers waiting on a reply'
+                        ? t('emptyNeedsReply')
                         : convoFilter === 'sent'
-                          ? 'No outbound-only threads — every conversation has a reply'
-                          : 'No conversations yet'}
+                          ? t('emptySent')
+                          : t('emptyNone')}
                 </p>
               </div>
             ) : (
@@ -3075,7 +2735,7 @@ export default function Inbox({
                           {/* For threads where the customer is waiting on us, show
                               WHEN THEY WROTE — otherwise an outbound blast on top
                               of an old unread masks how stale it really is. */}
-                          {fmtTime((c.unread > 0 || c.needsReply) && c.lastInboundAt ? c.lastInboundAt : c.lastTimestamp)}
+                          {fmtTime((c.unread > 0 || c.needsReply) && c.lastInboundAt ? c.lastInboundAt : c.lastTimestamp, locale, t('yesterdayAt'))}
                         </span>
                       </div>
                       <div className="flex items-center justify-between">
@@ -3093,15 +2753,6 @@ export default function Inbox({
                           </span>
                         )}
                       </div>
-                      {!!agentLabels[c.phone]?.length && (
-                        <div className="mt-1 flex max-w-full gap-1 overflow-hidden">
-                          {agentLabels[c.phone].slice(0, 3).map(label => (
-                            <span key={label} className="max-w-[110px] truncate rounded-full bg-violet-50 px-2 py-0.5 text-[9px] font-semibold text-violet-700 dark:bg-violet-500/15 dark:text-violet-300">
-                              {label}
-                            </span>
-                          ))}
-                        </div>
-                      )}
                     </div>
                   </button>
                 )
@@ -3109,7 +2760,7 @@ export default function Inbox({
             )}
             {isLoadingMoreConvos && (
               <div className="px-4 py-3 text-center text-[12px] text-[#667781] dark:text-[#8c8c8c]">
-                Loading more conversations...
+                {t('loadingMore')}
               </div>
             )}
           </div>
@@ -3118,7 +2769,7 @@ export default function Inbox({
         {/* ── Right panel — chat area ────────────────────────────────────────── */}
         <div className="h-full w-full min-w-0 max-w-full shrink-0 snap-start flex flex-col overflow-hidden bg-white dark:bg-[#0a0a0a] md:w-auto md:flex-1 md:shrink">
           {!activePhone ? (
-            <EmptyState />
+            <EmptyState title={t('emptyInboxTitle')} hint={t('emptyInboxHint')} />
           ) : (
             <div className="relative flex flex-col flex-1 min-w-0 overflow-hidden bg-white dark:bg-[#0a0a0a]">
               {/* Chat header */}
@@ -3260,14 +2911,14 @@ export default function Inbox({
 
               {/* Messages area — WhatsApp doodle pattern, theme-aware base */}
               <div className="flex-1 min-h-0 min-w-0 overflow-y-auto overflow-x-hidden px-4 py-4 space-y-1 overscroll-contain bg-[#efeae2] dark:bg-[#0a0a0a] bg-repeat bg-[length:323px] bg-[url(/whatsapp-business/wa-doodle-light.png)] dark:bg-[url(/whatsapp-business/wa-doodle-dark.png)] select-none [-webkit-user-select:none] [-webkit-touch-callout:none]">
-                {!threadData && !pendingForChat.length ? (
+                {!threadData ? (
                   <div className="flex items-center justify-center h-full">
                     <Icon icon="svg-spinners:ring-resize" className="text-3xl text-[#25D366]" />
                   </div>
                 ) : !groups.length ? (
                   <div className="flex items-center justify-center h-full">
                     <div className="bg-white dark:bg-[#202020] px-4 py-2 rounded-lg shadow-sm text-[13px] text-[#667781] dark:text-[#8c8c8c]">
-                      No messages yet. Send the first one!
+                      {t('noMessagesYet')}
                     </div>
                   </div>
                 ) : (
@@ -3322,7 +2973,7 @@ export default function Inbox({
                             {allMsgs.map(msg => {
                               if (overlaidReactionIds.has(msg.id)) return null
 
-                              const isOut = msg.direction === 'outbound'
+                              const isOut = bubbleIsOut(msg, activePhone, platformInbox)
                               const reactions = reactionsMap.get(msg.wa_message_id) ?? []
                               const failureMsg = isOut ? deliveryFailure(msg) : null
                               const carouselCards = carouselCardsOf(msg)
@@ -3330,17 +2981,16 @@ export default function Inbox({
                               const quotedParent = msg.metadata?.reply_to
                                 ? messagesByWamid.get(String(msg.metadata.reply_to))
                                 : undefined
-                              const kind = messageKindOf(msg)
 
                               // Orphan reaction (no parent found) → its own small bubble
                               if (msg.type === 'reaction') {
                                 const emoji = msg.metadata?.reaction || msg.body || '❤️'
                                 return (
-                                  <div key={msg.id} className={`flex ${isOut ? 'justify-end' : 'justify-start'}`}>
+                                  <div key={msg.id} dir="ltr" className={`flex ${isOut ? 'justify-end' : 'justify-start'}`}>
                                     <div className="flex items-center gap-1 bg-white dark:bg-[#202020] border border-gray-100 dark:border-[#333333] rounded-full px-2.5 py-1 shadow-sm">
                                       <span className="text-[18px] leading-none">{emoji}</span>
                                       <span className="text-[10px] text-[#667781] dark:text-[#8c8c8c]">
-                                        {fmtTimeFull(msg.timestamp)}
+                                        {fmtTimeFull(msg.timestamp, locale)}
                                       </span>
                                     </div>
                                   </div>
@@ -3348,9 +2998,9 @@ export default function Inbox({
                               }
 
                               return (
-                                <div key={msg.id} className={`flex min-w-0 ${isOut ? 'justify-end' : 'justify-start'} px-2`}>
+                                <div key={msg.id} dir="ltr" className={`flex min-w-0 ${isOut ? 'justify-end' : 'justify-start'} px-2`}>
                                   <div
-                                    className={`relative min-w-0 ${carouselCards ? 'w-full max-w-[min(100%,28rem)]' : kind === 'audio' ? '' : 'max-w-[82%] sm:max-w-[65%]'} ${reactions.length ? 'mb-4' : ''}`}
+                                    className={`relative min-w-0 ${carouselCards ? 'w-full max-w-[min(100%,28rem)]' : msg.type === 'audio' ? '' : 'max-w-[82%] sm:max-w-[65%]'} ${reactions.length ? 'mb-4' : ''}`}
                                     {...bindMessagePress(msg)}
                                   >
                                     <div
@@ -3367,23 +3017,72 @@ export default function Inbox({
                                         <p className="px-3 pt-2 pb-0 whitespace-pre-wrap break-words">
                                           {renderWaText(carouselBodyOf(msg))}
                                         </p>
-                                      ) : (
-                                        <ThreadMessageBody
-                                          msg={msg}
+                                      ) : msg.type === 'image' && msg.media_url ? (
+                                        <div>
+                                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                                          <img
+                                            src={srcFor(msg.media_url)}
+                                            alt={t('photo')}
+                                            className="max-w-full max-h-[280px] w-full object-cover cursor-pointer active:opacity-80 transition-opacity"
+                                            loading="lazy"
+                                            onClick={() => {
+                                              if (suppressClickRef.current) {
+                                                suppressClickRef.current = false
+                                                return
+                                              }
+                                              setLightboxSrc(srcFor(msg.media_url!))
+                                            }}
+                                          />
+                                          {msg.body && (
+                                            <p className="px-3 pt-1.5 pb-0 whitespace-pre-wrap break-words">{renderWaText(msg.body)}</p>
+                                          )}
+                                        </div>
+                                      ) : msg.type === 'video' && msg.media_url ? (
+                                        <div>
+                                          <div className="relative bg-black rounded-t-lg min-h-[160px] flex items-center justify-center">
+                                            <video
+                                              src={srcFor(msg.media_url)}
+                                              controls
+                                              preload="metadata"
+                                              className="max-w-full max-h-[280px] w-full"
+                                              playsInline
+                                            />
+                                          </div>
+                                          {msg.body && msg.body !== '🎥 Video' && msg.body !== `🎥 ${t('video')}` && (
+                                            <p className="px-3 pt-1.5 pb-0 whitespace-pre-wrap break-words">{renderWaText(msg.body)}</p>
+                                          )}
+                                        </div>
+                                      ) : msg.type === 'audio' && msg.media_url ? (
+                                        <AudioPlayer
+                                          src={srcFor(msg.media_url)}
                                           isOut={isOut}
-                                          srcFor={srcFor}
-                                          onOpenImage={setLightboxSrc}
-                                          suppressClickRef={suppressClickRef}
+                                          storedDuration={msg.metadata?.voice_duration ?? undefined}
+                                          timestamp={msg.timestamp}
+                                          status={msg.status}
                                         />
+                                      ) : msg.template_preview ? (
+                                        <TemplateBubble preview={msg.template_preview} />
+                                      ) : (
+                                        <p className="px-3 pt-2 pb-0 whitespace-pre-wrap break-words">
+                                          {msg.body ? renderWaText(msg.body) : (
+                                            msg.type === 'image'    ? `📷 ${t('photo')}` :
+                                            msg.type === 'video'    ? `🎥 ${t('video')}` :
+                                            msg.type === 'audio'    ? `🎙️ ${t('voiceMessage')}` :
+                                            msg.type === 'document' ? `📄 ${t('document')}` :
+                                            msg.type === 'sticker'  ? `🎨 ${t('sticker')}` :
+                                            msg.type === 'location' ? `📍 ${t('location')}` :
+                                            `📎 ${t('attachment')}`
+                                          )}
+                                        </p>
                                       )}
                                       {/* Audio carries its own timestamp inside the player */}
-                                      {kind !== 'audio' && (
+                                      {msg.type !== 'audio' && (
                                         <div className={`px-3 pb-1.5 flex items-center gap-1 mt-0.5 ${isOut ? 'justify-end' : 'justify-start'}`}>
                                           {starredIds.has(msg.id) && (
                                             <Icon icon="solar:star-bold" className="text-[11px] text-[#f59e0b]" />
                                           )}
                                           <span className={`text-[11px] ${isOut ? 'text-[#667781] dark:text-[#8fb7ad]' : 'text-[#667781] dark:text-[#8c8c8c]'}`}>
-                                            {fmtTimeFull(msg.timestamp)}
+                                            {fmtTimeFull(msg.timestamp, locale)}
                                           </span>
                                           {isOut && <StatusTick status={msg.status} />}
                                         </div>
@@ -3492,9 +3191,10 @@ export default function Inbox({
                     </div>
                     <button
                       onClick={sendVoice}
-                      className="w-9 h-9 rounded-full bg-[#25D366] hover:bg-[#1da851] flex items-center justify-center flex-shrink-0 transition-all shadow-sm"
+                      disabled={sending}
+                      className="w-9 h-9 rounded-full bg-[#25D366] hover:bg-[#1da851] disabled:opacity-50 flex items-center justify-center flex-shrink-0 transition-all shadow-sm"
                     >
-                      <Icon icon="solar:plain-bold" className="text-[16px] text-white dark:text-[#0a0a0a]" />
+                      <Icon icon={sending ? 'svg-spinners:ring-resize' : 'solar:plain-bold'} className="text-[16px] text-white dark:text-[#0a0a0a]" />
                     </button>
                   </>
                 ) : isRecording ? (
@@ -3511,7 +3211,7 @@ export default function Inbox({
                       <span className="text-[15px] font-mono text-[#111111] dark:text-[#e9edef] tabular-nums">
                         {fmtDuration(recordingTime)}
                       </span>
-                      <span className="text-[13px] text-[#667781] dark:text-[#8c8c8c]">Recording…</span>
+                      <span className="text-[13px] text-[#667781] dark:text-[#8c8c8c]">{t('recording')}</span>
                     </div>
                     <button
                       onClick={stopRecording}
@@ -3532,7 +3232,7 @@ export default function Inbox({
                     />
                     <button
                       onClick={() => fileInputRef.current?.click()}
-                      aria-label="Attach"
+                      aria-label={t('attach')}
                       className="w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 transition-colors text-[#54656f] dark:text-[#8c8c8c] hover:bg-black/5 dark:hover:bg-white/10"
                       style={{ WebkitTapHighlightColor: 'transparent' }}
                     >
@@ -3546,7 +3246,7 @@ export default function Inbox({
                         onKeyDown={handleKeyDown}
                         onPaste={handlePaste}
                         autoFocus
-                        placeholder="Type a message"
+                        placeholder={t('typeMessage')}
                         rows={1}
                         style={{ maxHeight: '100px', overflowY: 'auto' }}
                         className="flex-1 bg-transparent text-[15px] text-[#111111] dark:text-[#e9edef] placeholder:text-[#667781] dark:placeholder:text-[#8c8c8c] outline-none resize-none leading-[20px]"
@@ -3559,7 +3259,7 @@ export default function Inbox({
                       <button
                         type="button"
                         onClick={() => setShowEmoji(v => !v)}
-                        aria-label="Emoji"
+                        aria-label={t('emoji')}
                         className={`flex-shrink-0 transition-colors ${showEmoji ? 'text-[#25D366]' : 'text-[#54656f] dark:text-[#8c8c8c] hover:text-[#3b4a54] dark:hover:text-[#aeaeae]'}`}
                         style={{ WebkitTapHighlightColor: 'transparent' }}
                       >
@@ -3569,10 +3269,11 @@ export default function Inbox({
                     {messageText.trim() ? (
                       <button
                         onClick={handleSend}
-                        aria-label="Send"
-                        className="w-9 h-9 rounded-full bg-[#25D366] hover:bg-[#1da851] flex items-center justify-center flex-shrink-0 transition-all shadow-sm"
+                        disabled={sending}
+                        aria-label={t('send')}
+                        className="w-9 h-9 rounded-full bg-[#25D366] hover:bg-[#1da851] disabled:opacity-50 flex items-center justify-center flex-shrink-0 transition-all shadow-sm"
                       >
-                        <Icon icon="solar:plain-bold" className="text-[16px] text-white dark:text-[#0a0a0a]" />
+                        <Icon icon={sending ? 'svg-spinners:ring-resize' : 'solar:plain-bold'} className="text-[16px] text-white dark:text-[#0a0a0a]" />
                       </button>
                     ) : (
                       <button
@@ -3622,7 +3323,7 @@ export default function Inbox({
                 <Icon icon="solar:close-circle-bold" className="text-2xl text-white/80" />
               </button>
               <span className="text-white/70 text-sm font-medium">
-                {mediaFile.type.startsWith('video/') ? 'Video' : 'Photo'}
+                {mediaFile.type.startsWith('video/') ? t('video') : t('photo')}
               </span>
               <div className="w-10" />
             </div>
@@ -3659,7 +3360,7 @@ export default function Inbox({
                       void sendMedia()
                     }
                   }}
-                  placeholder="Add a caption…"
+                  placeholder={t('addCaption')}
                   rows={1}
                   autoFocus
                   className="flex-1 bg-transparent text-[15px] text-[#e9edef] placeholder:text-[#8c8c8c] outline-none resize-none leading-[20px]"
@@ -3667,9 +3368,10 @@ export default function Inbox({
               </div>
               <button
                 onClick={sendMedia}
-                className="w-12 h-12 rounded-full bg-[#25D366] hover:bg-[#1da851] flex items-center justify-center flex-shrink-0 transition-all shadow-lg"
+                disabled={mediaUploading}
+                className="w-12 h-12 rounded-full bg-[#25D366] hover:bg-[#1da851] disabled:opacity-50 flex items-center justify-center flex-shrink-0 transition-all shadow-lg"
               >
-                <Icon icon="solar:plain-bold" className="text-xl text-white" />
+                <Icon icon={mediaUploading ? 'svg-spinners:ring-resize' : 'solar:plain-bold'} className="text-xl text-white" />
               </button>
             </div>
           </div>
