@@ -13,6 +13,9 @@ import HoverInfo from './HoverInfo'
 import LeadFormBuilder from './LeadFormBuilder'
 import MediaLibrary from './MediaLibrary'
 import { WaLabelFields } from './WaLabelFields'
+import ChannelAssignmentModal, {
+  type ChannelAssignment,
+} from './ChannelAssignmentModal'
 
 const BP = process.env.NEXT_PUBLIC_BASE_PATH || '/whatsapp-ai-agents'
 
@@ -24,13 +27,22 @@ export type AgentDetailData = {
   productImage: string | null
   productJson: string | null
   policiesJson: string | null
+  assignments?: Array<{
+    id: string
+    agentId: string
+    channel: 'whatsapp' | 'instagram' | 'facebook'
+    endpointId: string
+    displayName: string
+    detailsJson?: string | null
+    details?: Record<string, unknown>
+  }>
 }
 
 // WhatsApp labels card is parked for now; flip this to bring it (and its label fetch) back.
 const SHOW_WA_LABELS = false
 
 const inputClass =
-  'h-11 w-full rounded-xl border border-slate-200 bg-white px-3.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-primary focus:ring-4 focus:ring-primary/20 dark:border-white/10 dark:bg-white/[0.05] dark:text-white dark:focus:border-primary dark:focus:ring-primary/20'
+  'h-10 w-full rounded-xl border border-[#e7e9ef] bg-white px-3.5 text-sm text-[#111827] outline-none transition placeholder:text-slate-400 focus:border-primary focus:ring-4 focus:ring-primary/15 dark:border-white/10 dark:bg-white/[0.05] dark:text-white dark:focus:border-primary dark:focus:ring-primary/20'
 
 function parseJson<T>(value: string | null, fallback: T): T {
   try {
@@ -53,7 +65,7 @@ function Field({
 }) {
   return (
     <label className="block">
-      <span className="mb-1.5 flex items-center gap-1.5 text-sm font-medium text-slate-800 dark:text-white/85">
+      <span className="mb-1.5 flex items-center gap-1.5 text-[13px] font-medium text-[#111827] dark:text-white/85">
         {label}
         {info && <HoverInfo text={info} />}
       </span>
@@ -99,12 +111,10 @@ function ManageSection({
   children: ReactNode
 }) {
   return (
-    <section className="grid gap-4 border-b border-slate-200 py-7 last:border-0 dark:border-white/10 md:grid-cols-[170px_minmax(0,1fr)]">
-      <div>
-        <h2 className="text-sm font-semibold text-slate-950 dark:text-white">{title}</h2>
-        <p className="mt-1 text-xs leading-5 text-slate-500 dark:text-white/40">{description}</p>
-      </div>
-      <div>{children}</div>
+    <section className="fm-card">
+      <h2 className="fm-title">{title}</h2>
+      <p className="fm-muted mt-1">{description}</p>
+      <div className="mt-4">{children}</div>
     </section>
   )
 }
@@ -148,26 +158,33 @@ const DEFAULT_CONFIG: AgentConfiguration = {
 export default function AgentDetail({
   agent,
   catalogProducts,
-  whatsapp,
   locale = null,
   onBack,
   onSave,
+  onAssignmentsChange,
 }: {
   agent: AgentDetailData
   catalogProducts: Product[]
-  whatsapp: {
-    connected?: boolean
-    tokenExpired?: boolean
-    phone?: { displayPhone?: string; verifiedName?: string } | null
-  }
   /** FlashManager app language (`fm_locale`), stored on the agent so the AI opens in it. */
   locale?: string | null
   onBack: () => void
   onSave: (payload: Record<string, unknown>) => Promise<{ policiesJson?: string | null } | void>
+  onAssignmentsChange: (assignments: ChannelAssignment[]) => void
 }) {
   const { getFreshToken } = useBridge()
   const rawConfig = parseJson<Partial<AgentConfiguration>>(agent.policiesJson, {})
-  const connected = whatsapp.connected === true && !whatsapp.tokenExpired
+  const [assignments, setAssignments] = useState<ChannelAssignment[]>(() =>
+    (agent.assignments || []).map((assignment) => ({
+      id: assignment.id,
+      agentId: assignment.agentId,
+      channel: assignment.channel,
+      endpointId: assignment.endpointId,
+      displayName: assignment.displayName,
+      details: assignment.details || parseJson<Record<string, unknown>>(assignment.detailsJson || null, {}),
+    })),
+  )
+  const [assignmentOpen, setAssignmentOpen] = useState(false)
+  const [assignmentBusy, setAssignmentBusy] = useState(false)
   const [name, setName] = useState(agent.name)
   const [config, setConfig] = useState<AgentConfiguration>(() => ({
     ...DEFAULT_CONFIG,
@@ -209,7 +226,7 @@ export default function AgentDetail({
   }, [settingsOpen])
 
   useEffect(() => {
-    if (!connected || !SHOW_WA_LABELS) {
+    if (!assignments.some((assignment) => assignment.channel === 'whatsapp') || !SHOW_WA_LABELS) {
       setWaLabels([])
       setLabelsLive(false)
       setLabelsError('')
@@ -241,7 +258,7 @@ export default function AgentDetail({
     return () => {
       cancelled = true
     }
-  }, [connected, getFreshToken])
+  }, [assignments, getFreshToken])
 
   const availableProducts = useMemo(() => {
     const selected = new Set(selectedProducts.map((product) => product.id))
@@ -296,8 +313,10 @@ export default function AgentDetail({
           color: QUNVERT_BRAND,
           purpose: 'support',
           tag: 'Support & order changes',
-          desiredStatus: connected ? config.desiredStatus : 'paused',
-          whatsappNumber: whatsapp.phone?.displayPhone || '',
+          desiredStatus: config.desiredStatus,
+          whatsappNumber: assignments.find((assignment) => assignment.channel === 'whatsapp')
+            ? String(assignments.find((assignment) => assignment.channel === 'whatsapp')?.details.phone || '')
+            : '',
           productIds: config.allProducts ? [] : selectedProducts.map((product) => product.id),
           submitVariantsForApproval: assigned && config.submitVariantsForApproval,
         },
@@ -319,13 +338,42 @@ export default function AgentDetail({
       }
       setSaved(true)
     } catch (reason) {
-      setError((reason as Error).message === 'whatsapp_disconnected'
-        ? 'Connect WhatsApp before activating this agent.'
-        : (reason as Error).message || 'Could not save this agent.')
+      setError((reason as Error).message || 'Could not save this agent.')
     } finally {
       setSaving(false)
     }
   }
+
+  const removeAssignment = async (assignment: ChannelAssignment) => {
+    setAssignmentBusy(true)
+    setError('')
+    try {
+      const token = await getFreshToken()
+      const response = await fetch(`${BP}/api/agents/${agent.id}/assignments/${assignment.id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!response.ok) throw new Error('Could not remove this assignment.')
+      const next = assignments.filter((item) => item.id !== assignment.id)
+      setAssignments(next)
+      onAssignmentsChange(next)
+    } catch (reason) {
+      setError((reason as Error).message)
+    } finally {
+      setAssignmentBusy(false)
+    }
+  }
+
+  const assignmentIcon = (assignment: ChannelAssignment) => assignment.channel === 'whatsapp'
+    ? 'mdi:whatsapp'
+    : assignment.channel === 'instagram'
+      ? 'mdi:instagram'
+      : 'mdi:facebook'
+  const assignmentAccent = (assignment: ChannelAssignment) => assignment.channel === 'whatsapp'
+    ? 'bg-emerald-500'
+    : assignment.channel === 'instagram'
+      ? 'bg-gradient-to-br from-fuchsia-500 via-rose-500 to-amber-400'
+      : 'bg-[#1877f2]'
 
   const refine = async () => {
     setRefining('instructions')
@@ -355,7 +403,7 @@ export default function AgentDetail({
   }
 
   return (
-    <main className="min-h-screen bg-[#f7f7fa] px-3 py-5 sm:px-4 sm:py-6 dark:bg-black">
+    <main className="min-h-screen bg-[#f4f5f8] px-4 py-5 sm:px-5 sm:py-6 dark:bg-black">
       <div className="w-full">
         <header className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex min-w-0 items-center gap-3">
@@ -377,7 +425,7 @@ export default function AgentDetail({
               <Icon icon="solar:settings-linear" width="18" />
               <span className="hidden sm:inline">General settings</span>
             </button>
-            <button type="button" onClick={save} disabled={saving || !name.trim()} className="inline-flex h-10 items-center gap-2 rounded-xl bg-primary px-4 text-sm font-semibold text-white shadow-[0_8px_24px_rgba(59,189,181,0.28)] hover:bg-primary-hover disabled:opacity-40">
+            <button type="button" onClick={save} disabled={saving || !name.trim()} className="inline-flex h-10 items-center gap-2 rounded-xl bg-primary px-4 text-sm font-semibold text-white hover:bg-primary-hover disabled:opacity-40">
               <Icon icon={saving ? 'solar:refresh-circle-linear' : 'solar:diskette-bold'} width="17" className={saving ? 'animate-spin' : ''} />
               {saving ? 'Saving…' : 'Save changes'}
             </button>
@@ -386,33 +434,75 @@ export default function AgentDetail({
 
         {error && <p className="mt-4 rounded-xl bg-rose-50 px-4 py-3 text-sm text-rose-600 dark:bg-rose-500/10 dark:text-rose-300">{error}</p>}
 
-        <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_340px]">
-          <div className="rounded-[24px] border border-slate-200/80 bg-white px-5 sm:px-6 dark:border-white/10 dark:bg-white/[0.035]">
-            <ManageSection title="Identity" description="Name your agent and define its job.">
-              <div className={`mb-4 flex items-center gap-3 rounded-xl border px-3.5 py-3 ${
-                connected
-                  ? 'border-primary/25 bg-primary/10 dark:border-primary/25 dark:bg-primary/10'
-                  : 'border-rose-200 bg-rose-50 dark:border-rose-500/25 dark:bg-rose-500/10'
-              }`}>
-                <span className={`grid h-9 w-9 shrink-0 place-items-center rounded-lg ${connected ? 'bg-primary text-white' : 'bg-rose-100 text-rose-500 dark:bg-rose-500/20'}`}>
-                  <Icon icon="mdi:whatsapp" width="20" />
-                </span>
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-semibold text-slate-900 dark:text-white/85">
-                    {connected ? whatsapp.phone?.verifiedName || 'WhatsApp Business' : 'No WhatsApp connected'}
-                  </p>
-                  <p className={`truncate text-xs ${connected ? 'text-primary dark:text-primary' : 'text-rose-600 dark:text-rose-300'}`}>
-                    {connected ? whatsapp.phone?.displayPhone || 'Connected' : 'Agent remains paused until a number is connected'}
-                  </p>
+        <div className="mt-5 grid gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
+          <div className="space-y-3">
+            <ManageSection title="AI agent assignment" description="Choose the account where this agent answers customers.">
+              {assignments.length > 0 ? (
+                <div className="space-y-3">
+                  {assignments.map((assignment) => {
+                    const selectedPosts = Array.isArray(assignment.details.selectedPosts)
+                      ? assignment.details.selectedPosts as unknown[]
+                      : []
+                    const destination = assignment.channel === 'whatsapp'
+                      ? String(assignment.details.phone || 'WhatsApp Business')
+                      : assignment.details.triggerType === 'specific_post'
+                        ? `${selectedPosts.length} selected post${selectedPosts.length === 1 ? '' : 's'}`
+                        : 'All posts'
+                    return (
+                      <div key={assignment.id} className="fm-choice fm-choice-on">
+                        <div className="flex w-full items-center gap-3">
+                          <span className={`grid h-12 w-12 shrink-0 place-items-center rounded-2xl text-white shadow-sm ${assignmentAccent(assignment)}`}>
+                            <Icon icon={assignmentIcon(assignment)} width="24" />
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <p className="truncate text-sm font-semibold text-slate-950 dark:text-white">{assignment.displayName}</p>
+                              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-semibold text-primary">
+                                <span className="h-1.5 w-1.5 rounded-full bg-primary" />
+                                Assigned
+                              </span>
+                            </div>
+                            <p className="mt-0.5 truncate text-xs capitalize text-slate-500 dark:text-white/40">
+                              {assignment.channel} · {destination}
+                            </p>
+                          </div>
+                          <button type="button" onClick={() => void removeAssignment(assignment)} disabled={assignmentBusy} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-rose-100 text-rose-500 hover:bg-rose-50 disabled:opacity-50 dark:border-rose-500/20 dark:hover:bg-rose-500/10" aria-label={`Remove ${assignment.displayName}`}>
+                            <Icon icon={assignmentBusy ? 'solar:refresh-circle-linear' : 'solar:trash-bin-trash-linear'} width="17" className={assignmentBusy ? 'animate-spin' : ''} />
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  })}
+                  <button type="button" onClick={() => setAssignmentOpen(true)} className="inline-flex h-10 items-center gap-2 rounded-xl border border-slate-200 px-3.5 text-sm font-semibold text-slate-700 hover:border-primary hover:text-primary dark:border-white/10 dark:text-white/65">
+                    <Icon icon="solar:add-circle-linear" width="18" />
+                    Add assignment
+                  </button>
                 </div>
-              </div>
+              ) : (
+                <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50/70 px-5 py-7 text-center dark:border-white/15 dark:bg-white/[0.025]">
+                  <span className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-primary/15 text-primary">
+                    <Icon icon="solar:link-circle-bold-duotone" width="24" />
+                  </span>
+                  <p className="mt-3 text-sm font-semibold text-slate-900 dark:text-white">Not assigned yet</p>
+                  <p className="mx-auto mt-1 max-w-sm text-xs leading-5 text-slate-500 dark:text-white/40">
+                    Assign WhatsApp, Instagram, or Facebook when you are ready for this agent to answer customers.
+                  </p>
+                  <button type="button" onClick={() => setAssignmentOpen(true)} className="mt-4 inline-flex h-10 items-center gap-2 rounded-xl bg-primary px-4 text-sm font-semibold text-white hover:bg-primary-hover">
+                    <Icon icon="solar:link-circle-bold" width="18" />
+                    Assign agent
+                  </button>
+                </div>
+              )}
+            </ManageSection>
+
+            <ManageSection title="Identity" description="Name your agent and define its job.">
               <div className="grid gap-4 sm:grid-cols-2">
                 <Field label="Agent name">
                   <input className={inputClass} value={name} onChange={(event) => { setName(event.target.value); setSaved(false) }} />
                 </Field>
                 <Field label="Status">
                   <select className={inputClass} value={config.desiredStatus} onChange={(event) => patch('desiredStatus', event.target.value as 'active' | 'paused')}>
-                    <option value="active" disabled={!connected}>Active</option>
+                    <option value="active">Active</option>
                     <option value="paused">Paused</option>
                   </select>
                 </Field>
@@ -429,7 +519,7 @@ export default function AgentDetail({
                   setSelectedProducts([])
                 }
                 setSaved(false)
-              }} className={`flex w-full items-center gap-3 rounded-xl border p-3 text-start ${config.allProducts ? 'border-primary/40 bg-primary/10 dark:border-primary/40 dark:bg-primary/10' : 'border-slate-200 dark:border-white/10'}`}>
+              }} className={`fm-choice ${config.allProducts ? 'fm-choice-on' : ''}`}>
                 <span className={`grid h-9 w-9 place-items-center rounded-lg ${config.allProducts ? 'bg-primary text-white' : 'bg-slate-100 text-slate-500 dark:bg-white/10'}`}><Icon icon="solar:widget-4-bold-duotone" width="19" /></span>
                 <span className="flex-1">
                   <span className="block text-sm font-semibold text-slate-900 dark:text-white/85">All products</span>
@@ -441,7 +531,7 @@ export default function AgentDetail({
               {!config.allProducts && (
                 <div className="mt-2 space-y-2">
                   {selectedProducts.map((product) => (
-                    <div key={product.id} className="flex items-center gap-3 rounded-xl border border-slate-200 p-2.5 dark:border-white/10">
+                    <div key={product.id} className="fm-choice py-2.5">
                       {product.image_url ? (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img src={product.image_url} alt="" className="h-10 w-10 rounded-lg object-cover" />
@@ -630,7 +720,7 @@ export default function AgentDetail({
                 )}
               </SettingsGroup>
 
-              {SHOW_WA_LABELS && connected && (
+              {SHOW_WA_LABELS && assignments.some((assignment) => assignment.channel === 'whatsapp') && (
                 <SettingsGroup title="WhatsApp labels" icon="solar:tag-bold-duotone">
                   <WaLabelFields
                     values={{
@@ -649,7 +739,7 @@ export default function AgentDetail({
                 </SettingsGroup>
               )}
 
-              <SettingsGroup title="WhatsApp safeguards" icon="solar:shield-check-bold-duotone">
+              <SettingsGroup title="Conversation safeguards" icon="solar:shield-check-bold-duotone">
                 <div className="grid gap-3">
                   <Field label="Max AI responses per chat" hint={`Hard cap is ${MAX_AI_REPLIES_PER_CHAT} so two bots cannot loop forever.`}>
                     <input type="number" min="1" max={MAX_AI_REPLIES_PER_CHAT} className={inputClass} value={config.maxResponses} onChange={(event) => patch('maxResponses', clampMaxResponses(event.target.value))} />
@@ -674,13 +764,29 @@ export default function AgentDetail({
           </div>
         </div>
       )}
+      {assignmentOpen && (
+        <ChannelAssignmentModal
+          agentId={agent.id}
+          onClose={() => setAssignmentOpen(false)}
+          onAssigned={(next) => {
+            const updated = [
+              ...assignments.filter((assignment) =>
+                !(assignment.channel === next.channel && assignment.endpointId === next.endpointId),
+              ),
+              next,
+            ]
+            setAssignments(updated)
+            onAssignmentsChange(updated)
+          }}
+        />
+      )}
     </main>
   )
 }
 
 function SettingsGroup({ title, icon, children }: { title: string; icon: string; children: ReactNode }) {
   return (
-    <section className="rounded-2xl border border-slate-200/80 p-4 dark:border-white/10">
+    <section className="fm-card">
       <div className="mb-3 flex items-center gap-2">
         <Icon icon={icon} width="18" className="text-primary" />
         <h3 className="text-sm font-semibold text-slate-900 dark:text-white/90">{title}</h3>

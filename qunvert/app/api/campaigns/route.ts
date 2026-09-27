@@ -3,7 +3,7 @@ export const dynamic = 'force-dynamic'
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { draftCampaign } from '@/lib/ai'
-import { shapeCampaign } from '@/lib/campaigns'
+import { refreshConversions, shapeCampaign } from '@/lib/campaigns'
 import { COPY_CREDITS, chargeCredits } from '@/lib/credits'
 import { requireOwner } from '@/lib/fm'
 import { getOrCreateSettings } from '@/lib/tenants'
@@ -27,6 +27,11 @@ export async function GET(req: Request) {
   const url = new URL(req.url)
   const page = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10) || 1)
   const limit = Math.min(20, Math.max(1, parseInt(url.searchParams.get('limit') || String(PAGE_SIZE), 10) || PAGE_SIZE))
+
+  if (page === 1) {
+    await refreshConversions(owner.ownerId, owner.token)
+      .catch((error) => console.error('[wa-ai] conversion refresh failed', error))
+  }
 
   const where = { ownerId: owner.ownerId }
   const [rows, total] = await Promise.all([

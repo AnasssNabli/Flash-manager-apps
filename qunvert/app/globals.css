@@ -4,4 +4,24 @@
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+  background: #f4f5f8;
+  color: #111827;
+}
+
+@layer components {
+  .fm-card {
+    @apply rounded-2xl border border-[#e7e9ef] bg-white p-4 dark:border-white/10 dark:bg-white/[0.04];
+  }
+  .fm-choice {
+    @apply flex w-full items-center gap-3 rounded-2xl border border-[#e7e9ef] bg-white p-4 text-start transition dark:border-white/10 dark:bg-white/[0.03];
+  }
+  .fm-choice-on {
+    @apply border-[#8fd9d4] bg-[#eefaf9] dark:border-primary/50 dark:bg-primary/10;
+  }
+  .fm-title {
+    @apply text-sm font-semibold text-[#111827] dark:text-white;
+  }
+  .fm-muted {
+    @apply text-xs leading-5 text-[#6b7280] dark:text-white/45;
+  }
 }

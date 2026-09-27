@@ -1,6 +1,6 @@
 {
   "en": {
-    "title": "Qunvert",
+    "title": "AI Agents",
     "openFromFM": "Open this from FlashManager",
     "connecting": "Connecting…",
     "tabAgents": "Agents",
@@ -80,7 +80,7 @@
     "error": "Something went wrong. Try again."
   },
   "fr": {
-    "title": "Qunvert",
+    "title": "AI Agents",
     "openFromFM": "Ouvrez ceci depuis FlashManager",
     "connecting": "Connexion…",
     "tabAgents": "Agents",
@@ -160,7 +160,7 @@
     "error": "Une erreur s’est produite. Réessayez."
   },
   "ar": {
-    "title": "Qunvert",
+    "title": "AI Agents",
     "openFromFM": "افتح هذا من فلاش مانجر",
     "connecting": "جارٍ الاتصال…",
     "tabAgents": "الوكلاء",

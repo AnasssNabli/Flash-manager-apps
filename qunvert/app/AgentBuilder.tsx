@@ -44,7 +44,7 @@ Information:
 We will contact you shortly for delivery. 🚚`
 
 const inputClass =
-  'h-11 w-full rounded-xl border border-slate-200 bg-white px-3.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-primary focus:ring-4 focus:ring-primary/20 dark:border-white/10 dark:bg-white/[0.05] dark:text-white dark:placeholder:text-white/30 dark:focus:border-primary dark:focus:ring-primary/20'
+  'h-10 w-full rounded-xl border border-[#e7e9ef] bg-white px-3.5 text-sm text-[#111827] outline-none transition placeholder:text-slate-400 focus:border-primary focus:ring-4 focus:ring-primary/15 dark:border-white/10 dark:bg-white/[0.05] dark:text-white dark:placeholder:text-white/30 dark:focus:border-primary dark:focus:ring-primary/20'
 
 function toBriefs(products: Product[]): ProductBrief[] {
   return products.slice(0, 40).map((product) => ({
@@ -68,8 +68,8 @@ function Section({
   children: ReactNode
 }) {
   return (
-    <section className="rounded-[24px] border border-slate-200/80 bg-white p-5 shadow-[0_1px_2px_rgba(15,23,42,0.02)] sm:p-6 dark:border-white/10 dark:bg-white/[0.035]">
-      <div className="mb-5 flex gap-3">
+    <section className="fm-card">
+      <div className="mb-4 flex gap-3">
         <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary dark:bg-primary/15 dark:text-primary">
           <Icon icon={icon} width="20" />
         </span>
@@ -164,7 +164,6 @@ function Toggle({
 export default function AgentBuilder({
   stores,
   products,
-  whatsapp,
   locale = null,
   loadingProducts,
   busy,
@@ -173,12 +172,6 @@ export default function AgentBuilder({
 }: {
   stores: Store[]
   products: Product[]
-  whatsapp: {
-    connected?: boolean
-    isShared?: boolean
-    tokenExpired?: boolean
-    phone?: { displayPhone?: string; verifiedName?: string } | null
-  }
   /** FlashManager app language (`fm_locale`): the AI opens conversations in it. */
   locale?: string | null
   loadingProducts: boolean
@@ -227,8 +220,7 @@ export default function AgentBuilder({
 
   const agentProducts = allProducts ? products : selectedProducts
   const productBriefs = useMemo(() => toBriefs(agentProducts), [agentProducts])
-  // No identity card: the agent is named after the store / WhatsApp number.
-  const agentName = `${selectedStore?.name || whatsapp.phone?.verifiedName || 'WhatsApp'} AI agent`.trim()
+  const agentName = `${selectedStore?.name || 'Store'} AI agent`.trim()
 
   const builtPrompt = compileQuestionnairePrompt({
     tone,
@@ -282,7 +274,7 @@ export default function AgentBuilder({
       tag: 'Support & order changes',
       purpose: 'support',
       desiredStatus: 'active',
-      whatsappNumber: whatsapp.phone?.displayPhone || '',
+      whatsappNumber: '',
       allProducts,
       productIds: allProducts ? [] : selectedIds,
       submitVariantsForApproval: catalogAssigned && submitVariants,
@@ -326,9 +318,8 @@ export default function AgentBuilder({
     }
   }
 
-  const connected = whatsapp.connected === true && !whatsapp.tokenExpired
-  const valid = connected
-  const canContinue = step === 1 ? connected : true
+  const valid = true
+  const canContinue = true
   const steps = [
     { number: 1, label: 'Store & products', icon: 'solar:box-minimalistic-bold-duotone' },
     { number: 2, label: 'Product knowledge', icon: 'solar:book-bookmark-bold-duotone' },
@@ -336,7 +327,7 @@ export default function AgentBuilder({
   const LAST_STEP = steps.length
 
   return (
-    <div className="min-h-screen bg-[#f7f7fa] dark:bg-black">
+    <div className="min-h-screen bg-[#f4f5f8] dark:bg-black">
       <header className="sticky top-0 z-30 border-b border-slate-200/80 bg-white/90 backdrop-blur-xl dark:border-white/10 dark:bg-[#0d0d10]/90">
         <div className="mx-auto flex max-w-[940px] items-center justify-between gap-4 px-4 py-4 sm:px-6">
           <div className="flex min-w-0 items-center gap-3">
@@ -380,39 +371,20 @@ export default function AgentBuilder({
               {step === 2 && 'Build your agent’s product knowledge.'}
             </h1>
             <p className="mt-1.5 text-sm text-slate-500 dark:text-white/45">
-              {step === 1 && 'The agent uses your connected WhatsApp number and the products you choose here.'}
+              {step === 1 && 'Choose the store and products this agent should understand. You can assign a channel after creation.'}
               {step === 2 && 'Your AI studies the selected products and asks what real customers would. Your answers become its knowledge, then it writes its own instructions when you click Create. Orders and settings are configured on the Manage page.'}
             </p>
           </div>
 
           {step === 1 && (
             <>
-          <Section icon="solar:shop-2-bold-duotone" title="Store & WhatsApp" description="Where this agent works and which number it represents.">
-            <div className="grid gap-4 sm:grid-cols-2">
+          <Section icon="solar:shop-2-bold-duotone" title="Store" description="Choose the catalog this agent should use.">
+            <div className="max-w-md">
               <Field label="Store">
                 <select className={inputClass} value={storeId} onChange={(event) => setStoreId(event.target.value)}>
                   {stores.length === 0 && <option value="">FlashManager catalog</option>}
                   {stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}
                 </select>
-              </Field>
-              <Field label="Connected WhatsApp" hint="This agent automatically uses your connected WhatsApp Business number.">
-                <div className={`flex min-h-11 items-center gap-3 rounded-xl border px-3.5 py-2 ${
-                  connected
-                    ? 'border-primary/25 bg-primary/10 dark:border-primary/25 dark:bg-primary/10'
-                    : 'border-rose-200 bg-rose-50 dark:border-rose-500/25 dark:bg-rose-500/10'
-                }`}>
-                  <span className={`grid h-8 w-8 shrink-0 place-items-center rounded-lg ${connected ? 'bg-primary text-white' : 'bg-rose-100 text-rose-500 dark:bg-rose-500/20'}`}>
-                    <Icon icon="mdi:whatsapp" width="19" />
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-semibold text-slate-900 dark:text-white/85">
-                      {connected ? whatsapp.phone?.verifiedName || 'WhatsApp Business' : 'No WhatsApp connected'}
-                    </p>
-                    <p className={`truncate text-xs ${connected ? 'text-primary dark:text-primary' : 'text-rose-600 dark:text-rose-300'}`}>
-                      {connected ? whatsapp.phone?.displayPhone || 'Connected' : 'Connect a number in WhatsApp Business first'}
-                    </p>
-                  </div>
-                </div>
               </Field>
             </div>
           </Section>
@@ -435,11 +407,7 @@ export default function AgentBuilder({
                   setSubmitVariants(true)
                 }
               }}
-              className={`mb-3 flex w-full items-center gap-3 rounded-2xl border p-4 text-start transition ${
-                allProducts
-                  ? 'border-primary/40 bg-primary/10 dark:border-primary/40 dark:bg-primary/10'
-                  : 'border-slate-200 hover:border-slate-300 dark:border-white/10 dark:hover:border-white/20'
-              }`}
+              className={`fm-choice mb-3 ${allProducts ? 'fm-choice-on' : ''}`}
             >
               <span className={`grid h-11 w-11 shrink-0 place-items-center rounded-xl ${allProducts ? 'bg-primary text-white' : 'bg-slate-100 text-slate-500 dark:bg-white/10 dark:text-white/45'}`}>
                 <Icon icon="solar:widget-4-bold-duotone" width="22" />
@@ -471,11 +439,7 @@ export default function AgentBuilder({
                       key={product.id}
                       type="button"
                       onClick={() => toggleProduct(product.id)}
-                      className={`flex w-full items-center gap-3 rounded-2xl border p-3 text-start transition ${
-                        selected
-                          ? 'border-primary/40 bg-primary/10 dark:border-primary/40 dark:bg-primary/10'
-                          : 'border-slate-200/80 hover:border-slate-300 dark:border-white/10 dark:hover:border-white/20'
-                      }`}
+                      className={`fm-choice py-3 ${selected ? 'fm-choice-on' : ''}`}
                     >
                       {product.image_url ? (
                         // eslint-disable-next-line @next/next/no-img-element
@@ -489,7 +453,7 @@ export default function AgentBuilder({
                         <span className="block truncate text-sm font-medium text-slate-900 dark:text-white/90">{product.title}</span>
                         <span className="mt-0.5 block text-xs text-slate-500 dark:text-white/40">{product.price} {product.currency}</span>
                       </span>
-                      <span className={`grid h-6 w-6 shrink-0 place-items-center rounded-lg border ${selected ? 'border-primary bg-primary text-white' : 'border-slate-300 dark:border-white/20'}`}>
+                      <span className={`grid h-5 w-5 shrink-0 place-items-center rounded-full border ${selected ? 'border-primary bg-primary text-white' : 'border-[#d5d8e0] dark:border-white/20'}`}>
                         {selected && <Icon icon="solar:check-read-linear" width="15" />}
                       </span>
                     </button>
@@ -529,7 +493,7 @@ export default function AgentBuilder({
 
           {promptError && <p className="text-sm text-rose-500">{promptError}</p>}
 
-          <div className="sticky bottom-3 z-20 flex items-center justify-between gap-3 rounded-2xl border border-slate-200/80 bg-white/95 p-3 shadow-[0_16px_45px_rgba(15,23,42,0.12)] backdrop-blur-xl dark:border-white/10 dark:bg-[#17171c]/95">
+          <div className="sticky bottom-3 z-20 flex items-center justify-between gap-3 rounded-2xl border border-[#e7e9ef] bg-white p-3 shadow-[0_8px_24px_rgba(15,23,42,0.06)] dark:border-white/10 dark:bg-[#17171c]">
             <button
               type="button"
               onClick={() => step === 1 ? onCancel() : setStep((current) => current - 1)}
@@ -544,14 +508,14 @@ export default function AgentBuilder({
                   type="button"
                   onClick={() => setStep((current) => current + 1)}
                   disabled={!canContinue}
-                  className="inline-flex h-11 items-center gap-2 rounded-xl bg-primary px-5 text-sm font-semibold text-white shadow-[0_8px_24px_rgba(59,189,181,0.28)] transition hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-40"
+                  className="inline-flex h-10 items-center gap-2 rounded-xl bg-primary px-5 text-sm font-semibold text-white transition hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   Continue
                   <Icon icon="solar:arrow-right-linear" width="18" />
                 </button>
               </div>
             ) : (
-              <button type="button" onClick={submit} disabled={!valid || busy || generatingPrompt} className="inline-flex h-11 items-center gap-2 rounded-xl bg-primary px-5 text-sm font-semibold text-white shadow-[0_8px_24px_rgba(59,189,181,0.28)] transition hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-40">
+              <button type="button" onClick={submit} disabled={!valid || busy || generatingPrompt} className="inline-flex h-10 items-center gap-2 rounded-xl bg-primary px-5 text-sm font-semibold text-white transition hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-40">
                 <Icon icon={generatingPrompt ? 'solar:refresh-circle-linear' : 'solar:diskette-bold'} width="18" className={generatingPrompt ? 'animate-spin' : ''} />
                 {generatingPrompt ? 'Building prompt…' : busy ? 'Saving agent…' : 'Create AI agent'}
               </button>

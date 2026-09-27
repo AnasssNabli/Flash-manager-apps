@@ -1,18 +1,10 @@
 export const dynamic = 'force-dynamic'
 
 import { NextResponse } from 'next/server'
-import { parseAgentConfig, shouldSubmitVariantCarousel } from '@/lib/agentConfig'
-import { submitVariantCarouselTemplates } from '@/lib/carouselTemplates'
 import { prisma } from '@/lib/db'
 import { requireOwner } from '@/lib/fm'
 import { normalizeAppLocale } from '@/lib/language'
 import { publishLeadFlowForAgent } from '@/lib/leadFlowSync'
-import { waStatus } from '@/lib/wa'
-
-async function whatsappReady(token: string) {
-  const status = await waStatus(token)
-  return status.connected === true && !status.tokenExpired
-}
 
 export async function GET(req: Request) {
   const owner = await requireOwner(req)
@@ -20,6 +12,7 @@ export async function GET(req: Request) {
   const agents = await prisma.agent.findMany({
     where: { ownerId: owner.ownerId },
     orderBy: { createdAt: 'desc' },
+    include: { assignments: true },
   })
   return NextResponse.json({ agents })
 }
@@ -39,10 +32,9 @@ export async function POST(req: Request) {
   ).slice(0, 120)
 
   const wantsActive = body.policies?.desiredStatus === 'active'
-  const enabled = wantsActive && await whatsappReady(owner.token)
+  const enabled = wantsActive
 
   const policies = body.policies && typeof body.policies === 'object' ? body.policies : {}
-  const config = parseAgentConfig(policies)
   const created = await prisma.agent.create({
     data: {
       ownerId: owner.ownerId,
@@ -60,13 +52,10 @@ export async function POST(req: Request) {
       language: normalizeAppLocale(body.language) || 'auto',
     },
   })
-  const agent = await publishLeadFlowForAgent(owner.token, created)
-  let carousel: { ok: boolean; submitted?: number; error?: string } | null = null
-  if (shouldSubmitVariantCarousel(config)) {
-    carousel = await submitVariantCarouselTemplates(owner.token, {
-      allProducts: config.allProducts,
-      productIds: config.productIds,
-    })
-  }
-  return NextResponse.json({ agent, carousel })
+  await publishLeadFlowForAgent(owner.token, created)
+  const agent = await prisma.agent.findUnique({
+    where: { id: created.id },
+    include: { assignments: true },
+  })
+  return NextResponse.json({ agent, carousel: null })
 }

@@ -5,7 +5,13 @@ export type WaStatus = {
   connected?: boolean
   isShared?: boolean
   tokenExpired?: boolean
-  phone?: { displayPhone?: string; verifiedName?: string } | null
+  phoneNumberId?: string
+  phone?: {
+    displayPhone?: string
+    verifiedName?: string
+    phoneNumberId?: string
+    id?: string
+  } | null
   setupChoice?: string | null
 }
 
@@ -241,8 +247,9 @@ export async function waStatus(token: string): Promise<WaStatus> {
   }
 }
 
-export async function listConvos(token: string, filter = 'all', limit = 80): Promise<Convo[]> {
+export async function listConvos(token: string, filter = 'all', limit = 80, search = ''): Promise<Convo[]> {
   const q = new URLSearchParams({ filter, limit: String(limit) })
+  if (search.trim()) q.set('search', search.trim())
   const res = await gw<{ conversations?: Convo[] }>(`/v1/whatsapp/conversations?${q}`, token)
   return Array.isArray(res?.conversations) ? res.conversations : []
 }

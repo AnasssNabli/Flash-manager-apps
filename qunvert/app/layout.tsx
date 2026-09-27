@@ -5,9 +5,9 @@ import { ThemeSync } from './ThemeSync'
 export const dynamic = 'force-dynamic'
 
 export const metadata = {
-  title: 'Qunvert',
+  title: 'AI Agents',
   description:
-    'Qunvert is a WhatsApp AI agent that automates customer conversations and product campaigns.',
+    'AI Agents for customer support across WhatsApp, Instagram, and Facebook.',
 }
 
 const themeScript = `(function(){try{

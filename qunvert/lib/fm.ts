@@ -82,7 +82,7 @@ export async function gwResponse(path: string, token: string, init?: RequestInit
 export function gatewayErrorMessage(error: unknown, fallback: string) {
   const raw = error instanceof Error ? error.message : String(error || '')
   if (/files:read|files:write/i.test(raw)) {
-    return 'FlashManager Files isn’t enabled for this app yet. Ask an admin to add files:read and files:write to Qunvert, then reopen the app.'
+    return 'FlashManager Files isn’t enabled for AI Agents yet. Ask an admin to enable file access, then reopen the app.'
   }
   const jsonMatch = raw.match(/\{[\s\S]*\}$/)
   if (jsonMatch) {

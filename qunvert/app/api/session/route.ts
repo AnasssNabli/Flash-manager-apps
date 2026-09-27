@@ -24,6 +24,7 @@ export async function POST(req: Request) {
     prisma.agent.findMany({
       where: { ownerId: owner.ownerId },
       orderBy: { createdAt: 'desc' },
+      include: { assignments: true },
     }),
   ])
 

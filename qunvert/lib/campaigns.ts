@@ -106,13 +106,13 @@ export async function refreshConversions(ownerId: string, token: string): Promis
     orderBy: { updatedAt: 'desc' },
     take: 15,
   })
-  for (const campaign of campaigns) {
+  await Promise.all(campaigns.map(async (campaign) => {
     const sends = await prisma.campaignSend.findMany({
       where: { campaignId: campaign.id, status: 'sent' },
       select: { phone: true },
       take: 400,
     })
-    if (!sends.length) continue
+    if (!sends.length) return
     const after = campaign.startedAt || campaign.createdAt
     const productIds = campaign.productId ? [campaign.productId] : []
     const buyers = await listBuyers(token, {
@@ -128,7 +128,7 @@ export async function refreshConversions(ownerId: string, token: string): Promis
         data: { converted },
       })
     }
-  }
+  }))
 }
 
 export async function processCampaigns(ownerId: string, token: string): Promise<number> {
@@ -182,6 +182,5 @@ export async function processCampaigns(ownerId: string, token: string): Promise<
     })
   }
 
-  await refreshConversions(ownerId, token)
   return sent
 }

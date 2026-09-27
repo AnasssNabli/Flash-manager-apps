@@ -45,7 +45,12 @@ export async function processFollowUps(ownerId: string, token: string): Promise<
 
     try {
       const agent = await prisma.agent.findFirst({
-        where: { id: job.agentId, ownerId, enabled: true },
+        where: {
+          id: job.agentId,
+          ownerId,
+          enabled: true,
+          assignments: { some: { channel: 'whatsapp' } },
+        },
       })
       if (!agent) throw new Error('agent_inactive')
       const config = parseAgentConfig(agent.policiesJson)

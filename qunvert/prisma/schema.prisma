@@ -43,8 +43,44 @@ model Agent {
   language     String   @default("auto")
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+  assignments  AgentChannelAssignment[]
 
   @@index([ownerId, createdAt])
+}
+
+model MetaAccount {
+  id          String   @id @default(cuid())
+  ownerId     String
+  provider    String
+  externalId  String
+  displayName String?
+  username    String?
+  accessToken String   @db.Text
+  scope       String?
+  status      String   @default("connected")
+  connectedAt DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([ownerId, provider, externalId])
+  @@index([ownerId, provider, status])
+}
+
+model AgentChannelAssignment {
+  id          String   @id @default(cuid())
+  ownerId     String
+  agentId     String
+  channel     String
+  endpointId  String
+  displayName String
+  detailsJson String?  @db.Text
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  agent       Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@unique([ownerId, channel, endpointId])
+  @@unique([agentId, channel, endpointId])
+  @@index([agentId, createdAt])
+  @@index([ownerId, channel])
 }
 
 model ReplyLog {

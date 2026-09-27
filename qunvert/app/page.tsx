@@ -8,6 +8,8 @@ import type { Product } from '@/lib/products'
 import type { Store } from '@/lib/stores'
 import AgentBuilder, { type AgentConfiguration, type AgentPayload } from './AgentBuilder'
 import AgentDetail from './AgentDetail'
+import type { ChannelAssignment } from './ChannelAssignmentModal'
+import Messagerie from './Messagerie'
 
 const BP = process.env.NEXT_PUBLIC_BASE_PATH || '/whatsapp-ai-agents'
 
@@ -23,13 +25,15 @@ type Agent = {
   policiesJson: string | null
   enabled: boolean
   createdAt: string
-}
-
-type ConnectedWhatsApp = {
-  connected?: boolean
-  isShared?: boolean
-  tokenExpired?: boolean
-  phone?: { displayPhone?: string; verifiedName?: string } | null
+  assignments?: Array<{
+    id: string
+    agentId: string
+    channel: 'whatsapp' | 'instagram' | 'facebook'
+    endpointId: string
+    displayName: string
+    detailsJson?: string | null
+    details?: Record<string, unknown>
+  }>
 }
 
 function parseConfiguration(agent: Agent): Partial<AgentConfiguration> {
@@ -51,21 +55,12 @@ function productCount(agent: Agent, config: Partial<AgentConfiguration>) {
   return agent.productId || agent.productName ? 1 : 0
 }
 
-function formatWhatsAppNumber(raw?: string | null) {
-  const value = String(raw || '').trim()
-  if (!value) return ''
-  if (value.startsWith('+')) return value
-  const digits = value.replace(/\D/g, '')
-  return digits ? `+${digits}` : value
-}
-
 function purposeLabel(_config: Partial<AgentConfiguration>) {
   return 'Customer support & order changes'
 }
 
 function AgentCard({
   agent,
-  whatsapp,
   confirming,
   deleting,
   onOpen,
@@ -74,7 +69,6 @@ function AgentCard({
   onConfirmDelete,
 }: {
   agent: Agent
-  whatsapp: ConnectedWhatsApp
   confirming: boolean
   deleting: boolean
   onOpen: () => void
@@ -85,16 +79,16 @@ function AgentCard({
   const config = parseConfiguration(agent)
   const count = productCount(agent, config)
   const allProducts = config.allProducts === true
-  const connected = Boolean(whatsapp.connected && !whatsapp.tokenExpired)
-  const live = connected && agent.enabled && config.desiredStatus !== 'paused'
-  const number = formatWhatsAppNumber(whatsapp.phone?.displayPhone || config.whatsappNumber)
-  const waName = whatsapp.phone?.verifiedName || ''
+  const assignments = agent.assignments || []
+  const live = Boolean(assignments.length && agent.enabled && config.desiredStatus !== 'paused')
+  const channelIcon = (channel: 'whatsapp' | 'instagram' | 'facebook') =>
+    channel === 'instagram' ? 'mdi:instagram' : channel === 'facebook' ? 'mdi:facebook' : 'mdi:whatsapp'
 
   return (
-    <article className="flex h-full flex-col rounded-2xl border border-slate-200 bg-white p-4 transition-[border-color,box-shadow] duration-200 hover:border-slate-300 hover:shadow-[0_10px_28px_rgba(15,23,42,0.06)] dark:border-white/10 dark:bg-white/[0.04] dark:hover:border-white/20">
+    <article className="fm-card flex h-full flex-col">
       <div className="flex items-start gap-2.5">
         <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-primary/15 text-primary dark:bg-primary/20">
-          <Icon icon="mdi:whatsapp" width="18" />
+          <Icon icon="solar:stars-minimalistic-bold-duotone" width="18" />
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
@@ -105,31 +99,40 @@ function AgentCard({
                 : 'bg-slate-100 text-slate-500 dark:bg-white/10 dark:text-white/45'
             }`}>
               <span className={`h-1.5 w-1.5 rounded-full ${live ? 'bg-primary' : 'bg-slate-400'}`} />
-              {live ? 'Live' : 'Paused'}
+              {live ? 'Live' : assignments.length ? 'Paused' : 'Unassigned'}
             </span>
           </div>
           <p className="mt-0.5 truncate text-[11px] text-slate-500 dark:text-white/40">{purposeLabel(config)}</p>
         </div>
       </div>
 
-      <div className={`mt-3 flex items-center gap-2.5 rounded-xl px-2.5 py-2 ${
-        connected
-          ? 'bg-primary/10 dark:bg-primary/10'
-          : 'bg-amber-50 dark:bg-amber-500/10'
+      <div className={`mt-3 flex items-center gap-3 rounded-2xl border px-3 py-3 ${
+        assignments.length
+          ? 'fm-choice-on'
+          : 'border-[#e7e9ef] bg-[#fafafa] dark:border-white/10 dark:bg-white/[0.03]'
       }`}>
         <span className={`grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-white dark:bg-black/20 ${
-          connected ? 'text-primary' : 'text-amber-600'
+          assignments.length ? 'text-primary' : 'text-amber-600'
         }`}>
-          <Icon icon="solar:phone-bold" width="14" />
+          <Icon icon={assignments.length ? 'solar:link-circle-bold-duotone' : 'solar:link-broken-minimalistic-linear'} width="14" />
         </span>
-        <div className="min-w-0">
-          <p className={`truncate text-[13px] font-semibold ${connected ? 'text-slate-900 dark:text-white' : 'text-amber-800 dark:text-amber-200'}`}>
-            {number || 'No WhatsApp number'}
+        <div className="min-w-0 flex-1">
+          <p className={`truncate text-[13px] font-semibold ${assignments.length ? 'text-slate-900 dark:text-white' : 'text-amber-800 dark:text-amber-200'}`}>
+            {assignments.length ? `${assignments.length} assignment${assignments.length === 1 ? '' : 's'}` : 'Not assigned'}
           </p>
           <p className="truncate text-[11px] text-slate-500 dark:text-white/40">
-            {connected ? (waName || 'Connected number') : 'Connect WhatsApp to go live'}
+            {assignments.length ? assignments.map((assignment) => assignment.displayName).join(' · ') : 'Assign a customer channel to go live'}
           </p>
         </div>
+        {assignments.length > 0 && (
+          <div className="flex -space-x-1.5">
+            {assignments.slice(0, 3).map((assignment) => (
+              <span key={assignment.id} className="grid h-7 w-7 place-items-center rounded-full border-2 border-primary/10 bg-white text-primary shadow-sm dark:border-black/20 dark:bg-[#1c1c20]">
+                <Icon icon={channelIcon(assignment.channel)} width="14" />
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="mt-3 flex items-center gap-3 text-[11px] text-slate-500 dark:text-white/40">
@@ -180,7 +183,7 @@ function AgentCard({
             <button
               type="button"
               onClick={onOpen}
-              className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-primary px-3.5 text-[13px] font-semibold text-white shadow-[0_8px_18px_rgba(59,189,181,0.28)] transition hover:bg-primary-hover"
+              className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-primary px-3.5 text-[13px] font-semibold text-white transition hover:bg-primary-hover"
             >
               Manage
               <Icon icon="solar:arrow-right-linear" width="14" />
@@ -198,10 +201,9 @@ export default function Page() {
   const embedded = typeof window === 'undefined' || window.self !== window.top
   const [loading, setLoading] = useState(true)
   const [builderOpen, setBuilderOpen] = useState(false)
+  const [messagerieOpen, setMessagerieOpen] = useState(false)
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null)
   const [agents, setAgents] = useState<Agent[]>([])
-  const [waiting, setWaiting] = useState(0)
-  const [whatsapp, setWhatsapp] = useState<ConnectedWhatsApp>({})
   const [stores, setStores] = useState<Store[]>([])
   const [products, setProducts] = useState<Product[]>([])
   const [loadingProducts, setLoadingProducts] = useState(false)
@@ -234,8 +236,6 @@ export default function Page() {
   const load = useCallback(async () => {
     const data = await api('/api/session', { method: 'POST', body: '{}' })
     setAgents(data.agents || [])
-    setWaiting(Number(data.waiting || 0))
-    setWhatsapp(data.status || {})
   }, [api])
 
   useEffect(() => {
@@ -302,6 +302,15 @@ export default function Page() {
     return data.agent as Agent
   }
 
+  const updateAssignments = (agentId: string, assignments: ChannelAssignment[]) => {
+    setAgents((current) => current.map((item) =>
+      item.id === agentId ? { ...item, assignments } : item,
+    ))
+    setSelectedAgent((current) =>
+      current?.id === agentId ? { ...current, assignments } : current,
+    )
+  }
+
   const deleteAgent = async (agent: Agent) => {
     setDeletingId(agent.id)
     setNotice('')
@@ -321,6 +330,10 @@ export default function Page() {
     () => agents.reduce((total, agent) => total + productCount(agent, parseConfiguration(agent)), 0),
     [agents],
   )
+  const assignedAgents = useMemo(
+    () => agents.filter((agent) => Boolean(agent.assignments?.length)).length,
+    [agents],
+  )
 
   if (!embedded) {
     return (
@@ -332,7 +345,7 @@ export default function Page() {
 
   if (!ready || loading) {
     return (
-      <div className="min-h-screen grid place-items-center bg-[#f7f7fa] dark:bg-black">
+      <div className="min-h-screen grid place-items-center bg-[#f4f5f8] dark:bg-black">
         <div className="flex items-center gap-3 text-sm text-slate-500 dark:text-white/45">
           <span className="grid h-9 w-9 animate-pulse place-items-center rounded-xl bg-primary/15 text-primary dark:bg-primary/20 dark:text-primary">
             <Icon icon="solar:stars-minimalistic-bold-duotone" width="20" />
@@ -343,6 +356,10 @@ export default function Page() {
     )
   }
 
+  if (messagerieOpen) {
+    return <Messagerie onClose={() => setMessagerieOpen(false)} />
+  }
+
   if (builderOpen) {
     return (
       <>
@@ -351,7 +368,6 @@ export default function Page() {
           products={products}
           loadingProducts={loadingProducts}
           busy={busy}
-          whatsapp={whatsapp}
           locale={locale}
           onCancel={() => setBuilderOpen(false)}
           onSave={saveAgent}
@@ -370,16 +386,16 @@ export default function Page() {
       <AgentDetail
         agent={selectedAgent}
         catalogProducts={products}
-        whatsapp={whatsapp}
         locale={locale}
         onBack={() => setSelectedAgent(null)}
         onSave={(payload) => updateAgent(selectedAgent, payload)}
+        onAssignmentsChange={(assignments) => updateAssignments(selectedAgent.id, assignments)}
       />
     )
   }
 
   return (
-    <main className="min-h-screen bg-[#f7f7fa] px-4 py-5 sm:px-6 sm:py-6 dark:bg-black">
+    <main className="min-h-screen bg-[#f4f5f8] px-4 py-5 sm:px-6 sm:py-6 dark:bg-black">
       <div className="mx-auto max-w-[1180px]">
         <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0">
@@ -387,25 +403,35 @@ export default function Page() {
               <span className="grid h-5 w-5 place-items-center rounded-md bg-primary/15 dark:bg-primary/20">
                 <Icon icon="solar:stars-minimalistic-bold-duotone" width="12" />
               </span>
-              Qunvert AI
+              Customer conversations
             </div>
-            <h1 className="mt-1.5 text-xl font-semibold tracking-[-0.03em] text-slate-950 dark:text-white">AI agents</h1>
+            <h1 className="mt-1.5 text-xl font-semibold tracking-[-0.03em] text-slate-950 dark:text-white">AI Agents</h1>
             <p className="mt-1 max-w-xl text-[13px] leading-5 text-slate-500 dark:text-white/45">
-              Create focused WhatsApp agents that understand your catalog, capture orders, and hand conversations back to your team.
+              Create one intelligent agent, then assign it to WhatsApp, Instagram, or Facebook.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={openBuilder}
-            className="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-xl bg-primary px-3.5 text-[13px] font-semibold text-white shadow-[0_10px_30px_rgba(59,189,181,0.30)] transition hover:bg-primary-hover"
-          >
-            <Icon icon="solar:add-circle-bold" width="16" />
-            Create AI agent
-          </button>
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setMessagerieOpen(true)}
+              className="inline-flex h-9 items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 text-[13px] font-semibold text-slate-700 hover:bg-slate-50 dark:border-white/10 dark:bg-white/5 dark:text-white/80 dark:hover:bg-white/10"
+            >
+              <Icon icon="solar:chat-round-dots-bold" width="16" />
+              Messagerie
+            </button>
+            <button
+              type="button"
+              onClick={openBuilder}
+              className="inline-flex h-9 items-center justify-center gap-1.5 rounded-xl bg-primary px-3.5 text-[13px] font-semibold text-white transition hover:bg-primary-hover"
+            >
+              <Icon icon="solar:add-circle-bold" width="16" />
+              Create AI agent
+            </button>
+          </div>
         </header>
 
         <section className="mt-5 grid gap-3 sm:grid-cols-3">
-          <div className="rounded-2xl border border-slate-200/70 bg-white p-3.5 dark:border-white/10 dark:bg-white/[0.04]">
+          <div className="fm-card">
             <div className="flex items-center justify-between">
               <span className="text-[11px] font-medium text-slate-500 dark:text-white/40">AI agents</span>
               <span className="grid h-7 w-7 place-items-center rounded-lg bg-primary/10 text-primary dark:bg-primary/15 dark:text-primary"><Icon icon="solar:stars-minimalistic-bold-duotone" width="14" /></span>
@@ -413,7 +439,7 @@ export default function Page() {
             <p className="mt-2 text-xl font-semibold tracking-[-0.03em] text-slate-950 dark:text-white">{agents.length}</p>
             <p className="mt-0.5 text-[11px] text-slate-400 dark:text-white/30">Configurations saved</p>
           </div>
-          <div className="rounded-2xl border border-slate-200/70 bg-white p-3.5 dark:border-white/10 dark:bg-white/[0.04]">
+          <div className="fm-card">
             <div className="flex items-center justify-between">
               <span className="text-[11px] font-medium text-slate-500 dark:text-white/40">Assigned products</span>
               <span className="grid h-7 w-7 place-items-center rounded-lg bg-primary/10 text-primary dark:bg-primary/15 dark:text-primary"><Icon icon="solar:box-minimalistic-bold-duotone" width="14" /></span>
@@ -421,13 +447,13 @@ export default function Page() {
             <p className="mt-2 text-xl font-semibold tracking-[-0.03em] text-slate-950 dark:text-white">{configuredProducts}</p>
             <p className="mt-0.5 text-[11px] text-slate-400 dark:text-white/30">Across all agents</p>
           </div>
-          <div className="rounded-2xl border border-slate-200/70 bg-white p-3.5 dark:border-white/10 dark:bg-white/[0.04]">
+          <div className="fm-card">
             <div className="flex items-center justify-between">
-              <span className="text-[11px] font-medium text-slate-500 dark:text-white/40">Waiting chats</span>
-              <span className="grid h-7 w-7 place-items-center rounded-lg bg-primary/10 text-primary dark:bg-primary/15 dark:text-primary"><Icon icon="solar:chat-round-dots-bold-duotone" width="14" /></span>
+              <span className="text-[11px] font-medium text-slate-500 dark:text-white/40">Assigned agents</span>
+              <span className="grid h-7 w-7 place-items-center rounded-lg bg-primary/10 text-primary dark:bg-primary/15 dark:text-primary"><Icon icon="solar:link-circle-bold-duotone" width="14" /></span>
             </div>
-            <p className="mt-2 text-xl font-semibold tracking-[-0.03em] text-slate-950 dark:text-white">{waiting}</p>
-            <p className="mt-0.5 text-[11px] text-slate-400 dark:text-white/30">Ready for the processing phase</p>
+            <p className="mt-2 text-xl font-semibold tracking-[-0.03em] text-slate-950 dark:text-white">{assignedAgents}</p>
+            <p className="mt-0.5 text-[11px] text-slate-400 dark:text-white/30">Connected to customer channels</p>
           </div>
         </section>
 
@@ -445,9 +471,9 @@ export default function Page() {
               </span>
               <h3 className="relative mt-3 text-[15px] font-semibold text-slate-950 dark:text-white">Create your first AI agent</h3>
               <p className="relative mx-auto mt-1.5 max-w-md text-[13px] leading-5 text-slate-500 dark:text-white/45">
-                Assign products and configure the exact way your agent should respond, follow up, capture orders, and involve your team.
+                Assign products and configure exactly how your agent should support customers and handle order changes.
               </p>
-              <button type="button" onClick={openBuilder} className="relative mt-4 inline-flex h-9 items-center gap-1.5 rounded-xl bg-primary px-3.5 text-[13px] font-semibold text-white shadow-[0_10px_28px_rgba(59,189,181,0.28)] hover:bg-primary-hover">
+              <button type="button" onClick={openBuilder} className="relative mt-4 inline-flex h-9 items-center gap-1.5 rounded-xl bg-primary px-3.5 text-[13px] font-semibold text-white hover:bg-primary-hover">
                 <Icon icon="solar:add-circle-bold" width="16" />
                 Create AI agent
               </button>
@@ -458,7 +484,6 @@ export default function Page() {
                 <AgentCard
                   key={agent.id}
                   agent={agent}
-                  whatsapp={whatsapp}
                   confirming={confirmingId === agent.id}
                   deleting={deletingId === agent.id}
                   onOpen={() => void openAgent(agent)}

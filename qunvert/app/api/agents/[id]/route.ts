@@ -3,16 +3,11 @@ export const dynamic = 'force-dynamic'
 import { NextResponse } from 'next/server'
 import { parseAgentConfig, shouldSubmitVariantCarousel } from '@/lib/agentConfig'
 import { submitVariantCarouselTemplates } from '@/lib/carouselTemplates'
+import { deleteMetaAssignmentSync, syncMetaAssignment } from '@/lib/channels'
 import { prisma } from '@/lib/db'
 import { requireOwner } from '@/lib/fm'
 import { normalizeAppLocale } from '@/lib/language'
 import { publishLeadFlowForAgent } from '@/lib/leadFlowSync'
-import { waStatus } from '@/lib/wa'
-
-async function whatsappReady(token: string) {
-  const status = await waStatus(token)
-  return status.connected === true && !status.tokenExpired
-}
 
 export async function PATCH(req: Request, { params }: { params: { id: string } }) {
   const body = await req.json().catch(() => ({}))
@@ -40,24 +35,27 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     data.policiesJson = JSON.stringify(body.policies)
     const policies = body.policies as Record<string, unknown>
     if (policies.desiredStatus === 'active' || policies.desiredStatus === 'paused') {
-      if (policies.desiredStatus === 'active' && !await whatsappReady(owner.token)) {
-        return NextResponse.json({ error: 'whatsapp_disconnected' }, { status: 409 })
-      }
       data.enabled = policies.desiredStatus === 'active'
     }
   }
 
   const updated = await prisma.agent.update({ where: { id: existing.id }, data })
   const agent = await publishLeadFlowForAgent(owner.token, updated)
+  const assignments = await prisma.agentChannelAssignment.findMany({
+    where: { agentId: agent.id, ownerId: owner.ownerId },
+  })
+  await Promise.all(assignments.map((assignment) =>
+    syncMetaAssignment(owner.ownerId, agent, assignment),
+  ))
   const config = parseAgentConfig(agent.policiesJson)
   let carousel: { ok: boolean; submitted?: number; error?: string } | null = null
-  if (shouldSubmitVariantCarousel(config)) {
+  if (assignments.some((assignment) => assignment.channel === 'whatsapp') && shouldSubmitVariantCarousel(config)) {
     carousel = await submitVariantCarouselTemplates(owner.token, {
       allProducts: config.allProducts,
       productIds: config.productIds,
     })
   }
-  return NextResponse.json({ agent, carousel })
+  return NextResponse.json({ agent: { ...agent, assignments }, carousel })
 }
 
 export async function DELETE(req: Request, { params }: { params: { id: string } }) {
@@ -70,6 +68,13 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
   if (!existing) return NextResponse.json({ error: 'not_found' }, { status: 404 })
 
   const whereAgent = { ownerId: owner.ownerId, agentId: existing.id }
+  const assignments = await prisma.agentChannelAssignment.findMany({
+    where: whereAgent,
+    select: { id: true },
+  })
+  await Promise.all(assignments.map((assignment) =>
+    deleteMetaAssignmentSync(existing.id, assignment.id),
+  ))
   await prisma.$transaction([
     prisma.agentFollowUp.deleteMany({ where: whereAgent }),
     prisma.agentConversationLabel.deleteMany({ where: whereAgent }),
